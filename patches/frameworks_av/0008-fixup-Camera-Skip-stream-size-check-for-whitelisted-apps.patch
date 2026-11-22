@@ -1,0 +1,22 @@
+From 8e15c068d7737319ef6ad97bfb3d927a71d9a419 Mon Sep 17 00:00:00 2001
+From: Arian <arian.kulmer@web.de>
+Date: Mon, 30 Jan 2023 09:31:15 +0000
+Subject: [PATCH] fixup! Camera: Skip stream size check for whitelisted apps
+
+Signed-off-by: Pranav Vashi <neobuddy89@gmail.com>
+Signed-off-by: Pranav Temkar <pranavtemkar@gmail.com>
+Signed-off-by: Saikrishna1504 <saikrishna26918@gmail.com>
+
+diff --git a/services/camera/libcameraservice/utils/SessionConfigurationUtils.cpp b/services/camera/libcameraservice/utils/SessionConfigurationUtils.cpp
+index 7cbf6995e859ee930c4e24605f5a63b7ef2b1929..42b59d49b70ebe0f84dec50d87b236b25f9be739 100644
+--- a/services/camera/libcameraservice/utils/SessionConfigurationUtils.cpp
++++ b/services/camera/libcameraservice/utils/SessionConfigurationUtils.cpp
+@@ -561,7 +561,7 @@ binder::Status createConfiguredSurface(
+     uint64_t allowedFlags = GraphicBuffer::USAGE_SW_READ_MASK |
+                            GraphicBuffer::USAGE_HW_TEXTURE |
+                            GraphicBuffer::USAGE_HW_COMPOSER;
+-    bool flexibleConsumer = (consumerUsage & disallowedFlags) == 0 &&
++    bool flexibleConsumer = !isPriviledgedClient && (consumerUsage & disallowedFlags) == 0 &&
+             (consumerUsage & allowedFlags) != 0;
+ 
+     out_surface = new Surface(flagtools::surfaceTypeToIGBP(surface), useAsync);

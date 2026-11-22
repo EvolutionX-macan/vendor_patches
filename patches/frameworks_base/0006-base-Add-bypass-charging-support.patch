@@ -1,0 +1,1462 @@
+From e38ae5c5d1eaeede188de97d02d25ab9f354fd82 Mon Sep 17 00:00:00 2001
+From: blazerpaul15 <blazerpaul15@gmail.com>
+Date: Sun, 22 Nov 2026 16:50:45 +0900
+Subject: [PATCH] base: Add bypass charging support
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- GameSpaceService now publishes the game_space binder with
+  IGameSpaceService (setBypassCharge, isBypassChargeActive,
+  getBypassChargePowerMicrowatts), guarded by WRITE_SECURE_SETTINGS.
+- GameStateDispatcher tracks manual and game bypass requests
+  separately. While power is connected it saves the Lineage Health
+  charging control state, holds charge at the current level with
+  MODE_LIMIT, publishes Settings.Global bypass_charge_active and
+  restores the saved state afterwards. A stale bypass state is restored
+  and the power receiver registered once GameSpace starts. EvoX's
+  GameSpace session handling is unchanged.
+- SystemUI: Bypass charging QS tile, Ax platform feature, bypass battery
+  glyph, and a lock screen "Bypass charging • X.X W" indication.
+
+Gated by persist.sys.battery_bypass_supported.
+
+Assisted-by: LLM
+
+diff --git a/core/java/com/android/internal/app/IGameSpaceService.aidl b/core/java/com/android/internal/app/IGameSpaceService.aidl
+new file mode 100644
+index 0000000000000000000000000000000000000000..a585fa8ef95a12bfd81ca4090067aa11e02dc888
+--- /dev/null
++++ b/core/java/com/android/internal/app/IGameSpaceService.aidl
+@@ -0,0 +1,23 @@
++/*
++ * Copyright (C) 2025-2026 AxionOS Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package com.android.internal.app;
++
++/** @hide */
++interface IGameSpaceService {
++    void setBypassCharge(boolean enabled);
++    boolean isBypassChargeActive();
++    long getBypassChargePowerMicrowatts();
++}
+diff --git a/packages/SystemUI/res-keyguard/values/strings.xml b/packages/SystemUI/res-keyguard/values/strings.xml
+index 9e747c7b712bca63dca55127f2735328c08f1e77..909eadb6709425af5d7cf4bc9f09813bb3a51e9c 100644
+--- a/packages/SystemUI/res-keyguard/values/strings.xml
++++ b/packages/SystemUI/res-keyguard/values/strings.xml
+@@ -67,6 +67,10 @@
+     <!-- When the lock screen is showing and the phone plugged in with incompatible charger. -->
+     <string name="keyguard_plugged_in_incompatible_charger"><xliff:g id="percentage">%s</xliff:g> • Check charging accessory</string>
+ 
++    <!-- Indication shown while the connected power source is directly powering the device. -->
++    <string name="keyguard_bypass_charging"><xliff:g id="percentage">%s</xliff:g> • Bypass charging</string>
++    <string name="keyguard_bypass_charging_with_power"><xliff:g id="percentage">%1$s</xliff:g> • Bypass charging • <xliff:g id="power_draw">%2$s</xliff:g></string>
++
+     <!-- SIM messages --><skip />
+     <!-- When the user inserts a sim card from an unsupported network, it becomes network locked -->
+     <string name="keyguard_network_locked_message">Network locked</string>
+diff --git a/packages/SystemUI/res/drawable/battery_unified_attr_bypass.xml b/packages/SystemUI/res/drawable/battery_unified_attr_bypass.xml
+new file mode 100644
+index 0000000000000000000000000000000000000000..3d3f8efd48b4dd7fb36e3759b35ccb40dbaf184e
+--- /dev/null
++++ b/packages/SystemUI/res/drawable/battery_unified_attr_bypass.xml
+@@ -0,0 +1,26 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!--
++  ~ Copyright (C) 2026 The Infinity-X Project
++  ~
++  ~ Licensed under the Apache License, Version 2.0 (the "License");
++  ~ you may not use this file except in compliance with the License.
++  ~ You may obtain a copy of the License at
++  ~
++  ~      http://www.apache.org/licenses/LICENSE-2.0
++  ~
++  ~ Unless required by applicable law or agreed to in writing, software
++  ~ distributed under the License is distributed on an "AS IS" BASIS,
++  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++  ~ See the License for the specific language governing permissions and
++  ~ limitations under the License.
++  -->
++
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="8dp"
++    android:height="10dp"
++    android:viewportWidth="16.0"
++    android:viewportHeight="20.0">
++    <path
++        android:fillColor="#000"
++        android:pathData="M4,5H7V1H9V5H12V10C12,12.2 10.2,14 8,14C5.8,14 4,12.2 4,10ZM7,14H9V19H7Z" />
++</vector>
+diff --git a/packages/SystemUI/res/drawable/ic_qs_bypass_charging.xml b/packages/SystemUI/res/drawable/ic_qs_bypass_charging.xml
+new file mode 100644
+index 0000000000000000000000000000000000000000..f63874c9413257076edbb2362f43e2526ed1a303
+--- /dev/null
++++ b/packages/SystemUI/res/drawable/ic_qs_bypass_charging.xml
+@@ -0,0 +1,32 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!--
++  ~ Copyright (C) 2026 The Infinity-X Project
++  ~
++  ~ Licensed under the Apache License, Version 2.0 (the "License");
++  ~ you may not use this file except in compliance with the License.
++  ~ You may obtain a copy of the License at
++  ~
++  ~      http://www.apache.org/licenses/LICENSE-2.0
++  ~
++  ~ Unless required by applicable law or agreed to in writing, software
++  ~ distributed under the License is distributed on an "AS IS" BASIS,
++  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++  ~ See the License for the specific language governing permissions and
++  ~ limitations under the License.
++  -->
++
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp"
++    android:height="24dp"
++    android:viewportWidth="760"
++    android:viewportHeight="760">
++    <group
++        android:scaleX="0.1"
++        android:scaleY="-0.1"
++        android:translateX="2.974"
++        android:translateY="744.928">
++        <path
++            android:fillColor="#FFFFFFFF"
++            android:pathData="M3591,6734C3523,6716 3482,6691 3435,6639C3367,6563 3357,6526 3352,6334L3348,6162L3097,6157C2876,6153 2836,6150 2770,6131C2477,6045 2267,5796 2231,5490C2225,5438 2218,4696 2214,3586L2207,1767L2026,1773C1821,1780 1777,1789 1650,1851C1494,1929 1370,2078 1309,2265C1288,2331 1286,2355 1282,2641L1279,2946L1335,2959C1552,3008 1752,3207 1809,3433C1837,3541 1843,4088 1817,4137C1793,4182 1753,4200 1676,4200L1611,4200L1608,4489C1605,4808 1606,4802 1536,4854C1498,4883 1411,4882 1373,4853C1308,4805 1305,4793 1302,4483L1299,4200L1109,4200L920,4200L920,4483C920,4809 918,4817 837,4859C749,4904 647,4859 621,4765C614,4740 610,4624 610,4464L610,4202L530,4198C455,4195 448,4193 418,4162C385,4130 385,4130 382,3832C379,3511 386,3445 435,3333C512,3159 680,3012 857,2964L920,2947L920,2681C920,2498 925,2385 935,2317C1003,1866 1326,1519 1757,1435C1796,1427 1915,1417 2019,1414L2210,1407L2210,1341C2211,1057 2386,774 2645,638C2818,548 2706,555 4034,552C5204,549 5214,550 5297,570C5589,644 5795,841 5887,1137C5915,1225 5915,1225 5918,2133L5921,3040L5743,3038L5565,3035L5562,2165C5560,1414 5557,1287 5544,1240C5495,1069 5348,939 5170,911C5058,893 3022,897 2935,915C2727,959 2584,1123 2564,1340L2557,1410L2961,1410C3528,1411 3617,1422 3815,1521C4016,1621 4173,1780 4275,1985C4358,2150 4378,2246 4391,2515C4397,2636 4408,2764 4416,2800C4460,2995 4603,3147 4810,3216C4861,3233 4921,3235 5714,3238L6563,3241L6489,3163C6449,3120 6403,3075 6388,3062C6343,3024 6307,2938 6313,2884C6325,2773 6444,2708 6557,2750C6598,2766 7118,3286 7141,3335C7163,3383 7165,3448 7145,3496C7126,3542 6619,4055 6566,4082C6480,4126 6367,4090 6329,4006C6286,3911 6306,3863 6447,3719L6562,3601L5694,3597C4923,3594 4817,3592 4757,3577C4416,3493 4160,3241 4074,2905C4053,2823 4047,2766 4039,2584C4032,2424 4024,2341 4011,2287C3950,2051 3769,1863 3534,1794C3469,1775 2587,1759 2569,1777C2552,1794 2577,5438 2595,5503C2626,5621 2700,5707 2818,5763C2885,5795 2885,5795 3242,5800C3723,5807 3693,5784 3700,6143L3705,6385L4082,6388L4459,6390L4462,6146C4466,5784 4436,5807 4918,5800C5275,5795 5275,5795 5342,5763C5457,5709 5536,5606 5560,5481C5566,5448 5570,5121 5570,4611L5570,3795L5745,3798L5920,3801L5920,4658C5920,5615 5921,5590 5850,5738C5777,5891 5656,6013 5507,6084C5378,6146 5341,6152 5063,6157L4810,6162L4810,6321C4810,6510 4795,6564 4722,6642C4626,6745 4628,6745 4105,6747C3725,6749 3636,6747 3591,6734Z" />
++    </group>
++</vector>
+diff --git a/packages/SystemUI/res/values/cm_strings.xml b/packages/SystemUI/res/values/cm_strings.xml
+index 2482f69895d306fda4244591c52e8cd2824d26bb..3c7507473f6aa2e59a5125c1abf38e7416f333cd 100644
+--- a/packages/SystemUI/res/values/cm_strings.xml
++++ b/packages/SystemUI/res/values/cm_strings.xml
+@@ -78,6 +78,9 @@
+ 
+     <!-- PowerShare QS tile -->
+     <string name="quick_settings_powershare_label">Wireless PowerShare</string>
++
++    <!-- QuickSettings: Bypass charging tile [CHAR LIMIT=NONE] -->
++    <string name="quick_settings_bypass_charging_label">Bypass charging</string>
+     <string name="quick_settings_powershare_off_powersave_label">Wireless PowerShare off\nBattery saver</string>
+     <string name="quick_settings_powershare_off_low_battery_label">Wireless PowerShare off\nBattery too low</string>
+     <string name="quick_settings_powershare_enabled_label">Wireless PowerShare is enabled</string>
+diff --git a/packages/SystemUI/res/values/config.xml b/packages/SystemUI/res/values/config.xml
+index 20b605cf0735501fe2d11a1c9f97ccd16d630278..57c123b2cd4c2edb9e9da704500a50e735cf6a9f 100644
+--- a/packages/SystemUI/res/values/config.xml
++++ b/packages/SystemUI/res/values/config.xml
+@@ -107,7 +107,7 @@
+ 
+     <!-- Tiles native to System UI. Order should match "quick_settings_tiles_default" -->
+     <string name="quick_settings_tiles_stock" translatable="false">
+-        internet,wifi,bt,flashlight,dnd,modes_dnd,alarm,airplane,nfc,controls,wallet,rotation,battery,cast,screenrecord,mictoggle,cameratoggle,location,hotspot,inversion,saver,dark,work,night,reverse,reduce_brightness,qr_code_scanner,onehanded,color_correction,font_scaling,record_issue,hearing_devices,notes,desktopeffects,cell,ambient_display,aod,caffeine,heads_up,powershare,profiles,reading_mode,sync,usb_tether,vpn,sound,dataswitch,volume_panel,locale,preferred_network,refresh_rate,compass,screenshot,dns,cpuinfo,fpsinfo,autobrightness,vpn_tethering,smart_pixels,onthego,weather,blur,remixmedia,rrvolume,rrbrightness,rrsound
++        internet,wifi,bt,flashlight,dnd,modes_dnd,alarm,airplane,nfc,controls,wallet,rotation,battery,cast,screenrecord,mictoggle,cameratoggle,location,hotspot,inversion,saver,dark,work,night,reverse,reduce_brightness,qr_code_scanner,onehanded,color_correction,font_scaling,record_issue,hearing_devices,notes,desktopeffects,cell,ambient_display,aod,caffeine,heads_up,powershare,bypass_charging,profiles,reading_mode,sync,usb_tether,vpn,sound,dataswitch,volume_panel,locale,preferred_network,refresh_rate,compass,screenshot,dns,cpuinfo,fpsinfo,autobrightness,vpn_tethering,smart_pixels,onthego,weather,blur,remixmedia,rrvolume,rrbrightness,rrsound
+     </string>
+ 
+     <!-- The tiles to display in QuickSettings -->
+diff --git a/packages/SystemUI/res/values/evolution_config.xml b/packages/SystemUI/res/values/evolution_config.xml
+index 02b0ec5b6d7b6b819960fb2d2d149b7f68b34784..58ab102ee88ffc097c9a63138bc779e9239545b4 100644
+--- a/packages/SystemUI/res/values/evolution_config.xml
++++ b/packages/SystemUI/res/values/evolution_config.xml
+@@ -53,6 +53,7 @@
+     <string name="config_batterymeterErrorPerimeterPath" translatable="false">@string/config_batterymeterPerimeterPath</string>
+     <string name="config_batterymeterFillMask" translatable="false">M2,18 v-14 h8 v14 z</string>
+     <string name="config_batterymeterBoltPath" translatable="false">M5,17.5 V12 H3 L7,4.5 V10 h2 L5,17.5 z</string>
++    <string name="config_batterymeterBypassPath" translatable="false">M3,5 H5 V2 H7 V5 H9 V10 C9,11.7 7.7,13 6,13 C4.3,13 3,11.7 3,10 Z M5.25,13 H6.75 V17 H5.25 Z</string>
+     <string name="config_batterymeterPowersavePath" translatable="false">M9,10l-2,0l0,-2l-2,0l0,2l-2,0l0,2l2,0l0,2l2,0l0,-2l2,0z</string>
+     <bool name="config_batterymeterDualTone">false</bool>
+     <integer name="config_batterymeterWidth">12</integer>
+diff --git a/packages/SystemUI/src/com/android/systemui/ax/AxPlatformFeatureController.kt b/packages/SystemUI/src/com/android/systemui/ax/AxPlatformFeatureController.kt
+index fdced0ad0c840536dc66e45d295c30152983c6f2..ce854530f3df6f76b3672487a252b8a0c67c2b66 100644
+--- a/packages/SystemUI/src/com/android/systemui/ax/AxPlatformFeatureController.kt
++++ b/packages/SystemUI/src/com/android/systemui/ax/AxPlatformFeatureController.kt
+@@ -33,11 +33,13 @@ import android.nfc.NfcAdapter
+ import android.os.PowerManager
+ import android.os.RemoteException
+ import android.os.ServiceManager
++import android.os.SystemProperties
+ import android.os.UserHandle
+ import android.provider.Settings
+ import android.service.dreams.IDreamManager
+ import android.util.Log
+ import com.android.axion.platform.AxPlatformClient
++import com.android.internal.app.IGameSpaceService
+ import com.android.settingslib.bluetooth.CachedBluetoothDevice
+ import com.android.settingslib.bluetooth.LocalBluetoothManager
+ import com.android.systemui.dagger.SysUISingleton
+@@ -103,6 +105,10 @@ class AxPlatformFeatureController @Inject constructor(
+     internal val lineageHardware: LineageHardwareManager? = try {
+         LineageHardwareManager.getInstance(context)
+     } catch (e: Exception) { null }
++    private fun getGameSpaceService(): IGameSpaceService? =
++        try {
++            IGameSpaceService.Stub.asInterface(ServiceManager.getService("game_space"))
++        } catch (e: Exception) { null }
+ 
+     private val screenshotHelper = ScreenshotHelper(context)
+     private val screenshotHandler = Handler(Looper.getMainLooper())
+@@ -127,6 +133,8 @@ class AxPlatformFeatureController @Inject constructor(
+                 add(AxPlatformClient.FEATURE_READING_MODE)
+             if (batteryController.isReverseSupported)
+                 add(AxPlatformClient.FEATURE_POWER_SHARE)
++            if (SystemProperties.getBoolean("persist.sys.battery_bypass_supported", false))
++                add(AxPlatformClient.FEATURE_BYPASS_CHARGING)
+             add(AxPlatformClient.FEATURE_CAFFEINE)
+             add(AxPlatformClient.FEATURE_VPN)
+             add(AxPlatformClient.FEATURE_CAST)
+@@ -241,6 +249,9 @@ class AxPlatformFeatureController @Inject constructor(
+             }
+             AxPlatformClient.FEATURE_POWER_SHARE ->
+                 batteryController.setReverseState(!batteryController.isReverseOn)
++            AxPlatformClient.FEATURE_BYPASS_CHARGING -> setBypassCharging(
++                !(getGameSpaceService()?.isBypassChargeActive ?: false)
++            )
+             AxPlatformClient.FEATURE_CAFFEINE -> {
+                 if (wakeLock.isHeld) {
+                     wakeLock.release()
+@@ -364,6 +375,7 @@ class AxPlatformFeatureController @Inject constructor(
+             }
+             AxPlatformClient.FEATURE_POWER_SHARE ->
+                 batteryController.setReverseState(enabled)
++            AxPlatformClient.FEATURE_BYPASS_CHARGING -> setBypassCharging(enabled)
+             AxPlatformClient.FEATURE_CAFFEINE -> {
+                 if (enabled && !wakeLock.isHeld) {
+                     wakeLock.acquire(CAFFEINE_DURATION_MS)
+@@ -444,6 +456,19 @@ class AxPlatformFeatureController @Inject constructor(
+         )
+     }
+ 
++    private fun setBypassCharging(enabled: Boolean) {
++        try {
++            val service = getGameSpaceService()
++            service?.setBypassCharge(enabled)
++            stateManager.broadcastBool(
++                AxPlatformClient.FEATURE_BYPASS_CHARGING,
++                service?.isBypassChargeActive ?: false
++            )
++        } catch (e: RemoteException) {
++            Log.w(TAG, "Bypass charging toggle failed", e)
++        }
++    }
++
+     companion object {
+         private const val TAG = "AxPlatformFeatureCtrl"
+         private const val CAFFEINE_DURATION_MS = 5L * 60 * 1000
+@@ -452,6 +477,7 @@ class AxPlatformFeatureController @Inject constructor(
+         const val SETTING_REDUCE_BRIGHT = "reduce_bright_colors_activated"
+         const val SETTING_ONE_HANDED = "one_handed_mode_enabled"
+         const val SETTING_SMART_PIXELS = "ax_smart_pixel_filter_enabled"
++        const val SETTING_BYPASS_CHARGE_ACTIVE = "bypass_charge_active"
+ 
+         fun isDarkMode(config: Configuration): Boolean =
+             (config.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+diff --git a/packages/SystemUI/src/com/android/systemui/ax/AxPlatformFeatureMapper.kt b/packages/SystemUI/src/com/android/systemui/ax/AxPlatformFeatureMapper.kt
+index 807dc4417636abbcb5c6fee2f622dfaf9406b3d8..321a4bdd70f6444f29328d45e2a69be6bfa800d0 100644
+--- a/packages/SystemUI/src/com/android/systemui/ax/AxPlatformFeatureMapper.kt
++++ b/packages/SystemUI/src/com/android/systemui/ax/AxPlatformFeatureMapper.kt
+@@ -133,6 +133,7 @@ class AxPlatformFeatureMapper @Inject constructor(
+             AxPlatformClient.FEATURE_DREAM to R.string.start_dreams,
+             AxPlatformClient.FEATURE_READING_MODE to R.string.quick_settings_reading_mode,
+             AxPlatformClient.FEATURE_POWER_SHARE to R.string.quick_settings_powershare_label,
++            AxPlatformClient.FEATURE_BYPASS_CHARGING to R.string.quick_settings_bypass_charging_label,
+             AxPlatformClient.FEATURE_CAFFEINE to R.string.quick_settings_caffeine_label,
+             AxPlatformClient.FEATURE_VPN to R.string.quick_settings_vpn_label,
+             AxPlatformClient.FEATURE_CAST to R.string.quick_settings_cast_title,
+diff --git a/packages/SystemUI/src/com/android/systemui/ax/AxPlatformObservers.kt b/packages/SystemUI/src/com/android/systemui/ax/AxPlatformObservers.kt
+index 37396c011efae062c92835eeb41920edd2d9bcaf..d3a128e0644a26b8dc5cfe85c1636af74c5703c3 100644
+--- a/packages/SystemUI/src/com/android/systemui/ax/AxPlatformObservers.kt
++++ b/packages/SystemUI/src/com/android/systemui/ax/AxPlatformObservers.kt
+@@ -193,6 +193,10 @@ class AxPlatformObservers @Inject constructor(
+             Settings.Global.HEADS_UP_NOTIFICATIONS_ENABLED,
+             AxPlatformClient.FEATURE_HEADS_UP
+         )
++        stateManager.observeGlobal(
++            AxPlatformFeatureController.SETTING_BYPASS_CHARGE_ACTIVE,
++            AxPlatformClient.FEATURE_BYPASS_CHARGING
++        )
+         stateManager.broadcastBool(
+             AxPlatformClient.FEATURE_AUTO_SYNC,
+             ContentResolver.getMasterSyncAutomatically()
+diff --git a/packages/SystemUI/src/com/android/systemui/battery/AccessorizedBatteryDrawable.kt b/packages/SystemUI/src/com/android/systemui/battery/AccessorizedBatteryDrawable.kt
+index fec83de528f3ae615cfc4d289d2de4855d89ae4b..83383b5bdd0b792ddb0a085146dbb09f140ac51a 100644
+--- a/packages/SystemUI/src/com/android/systemui/battery/AccessorizedBatteryDrawable.kt
++++ b/packages/SystemUI/src/com/android/systemui/battery/AccessorizedBatteryDrawable.kt
+@@ -178,6 +178,11 @@ class AccessorizedBatteryDrawable(
+         mainBatteryDrawable.charging = charging
+     }
+ 
++    /** Sets whether the charging glyph should indicate bypass charging. */
++    fun setBypassCharging(bypassCharging: Boolean) {
++        mainBatteryDrawable.bypassCharging = bypassCharging
++    }
++
+     /** Returns whether the battery is currently charging. */
+     fun getCharging(): Boolean {
+         return mainBatteryDrawable.charging
+diff --git a/packages/SystemUI/src/com/android/systemui/battery/BatteryMeterView.java b/packages/SystemUI/src/com/android/systemui/battery/BatteryMeterView.java
+index 1806e4e60b56230f8be91b27de1be94e4e84e893..65508f74f20eed3cd8ee1631f347c3818bcda438 100644
+--- a/packages/SystemUI/src/com/android/systemui/battery/BatteryMeterView.java
++++ b/packages/SystemUI/src/com/android/systemui/battery/BatteryMeterView.java
+@@ -85,6 +85,7 @@ public class BatteryMeterView extends LinearLayout implements DarkReceiver {
+     private boolean mShowPercentAvailable;
+     private String mEstimateText = null;
+     private boolean mPluggedIn;
++    private boolean mBypassCharging;
+     private boolean mPowerSaveEnabled;
+     private boolean mIsBatteryDefender;
+     private boolean mIsIncompatibleCharging;
+@@ -240,6 +241,7 @@ public class BatteryMeterView extends LinearLayout implements DarkReceiver {
+         mLevel = level;
+         boolean isCharging = isCharging();
+         mDrawable.setCharging(isCharging);
++        mDrawable.setBypassCharging(mBypassCharging);
+         mDrawable.setBatteryLevel(level);
+         updatePercentText();
+ 
+@@ -271,6 +273,8 @@ public class BatteryMeterView extends LinearLayout implements DarkReceiver {
+             resId = R.drawable.battery_unified_attr_powersave;
+         } else if (mIsBatteryDefender) {
+             resId = R.drawable.battery_unified_attr_defend;
++        } else if (mBypassCharging && isCharging) {
++            resId = R.drawable.battery_unified_attr_bypass;
+         } else if (isCharging) {
+             resId = R.drawable.battery_unified_attr_charging;
+         }
+@@ -326,6 +330,24 @@ public class BatteryMeterView extends LinearLayout implements DarkReceiver {
+         }
+     }
+ 
++    void onBypassChargingChanged(boolean bypassCharging) {
++        if (mBypassCharging == bypassCharging) {
++            return;
++        }
++        mBypassCharging = bypassCharging;
++        mDrawable.setBypassCharging(bypassCharging);
++        if (NewStatusBarIcons.isEnabled()) {
++            setBatteryDrawableState(
++                    new BatteryDrawableState(
++                            mUnifiedBatteryState.getLevel(),
++                            mUnifiedBatteryState.getShowPercent(),
++                            getCurrentColorProfile(),
++                            getBatteryAttribution(isCharging())
++                    )
++            );
++        }
++    }
++
+     void onIsBatteryDefenderChanged(boolean isBatteryDefender) {
+         boolean valueChanged = mIsBatteryDefender != isBatteryDefender;
+         mIsBatteryDefender = isBatteryDefender;
+@@ -775,6 +797,7 @@ public class BatteryMeterView extends LinearLayout implements DarkReceiver {
+         pw.println("    mBatteryStateUnknown: " + mBatteryStateUnknown);
+         pw.println("    mIsIncompatibleCharging: " + mIsIncompatibleCharging);
+         pw.println("    mPluggedIn: " + mPluggedIn);
++        pw.println("    mBypassCharging: " + mBypassCharging);
+         pw.println("    mLevel: " + mLevel);
+         pw.println("    mMode: " + mShowPercentMode);
+         if (NewStatusBarIcons.isEnabled()) {
+@@ -803,4 +826,3 @@ public class BatteryMeterView extends LinearLayout implements DarkReceiver {
+                 BatteryController.EstimateFetchCompletion completion);
+     }
+ }
+-
+diff --git a/packages/SystemUI/src/com/android/systemui/battery/BatteryMeterViewController.java b/packages/SystemUI/src/com/android/systemui/battery/BatteryMeterViewController.java
+index fcf51051940c8b1d5360fea5c8e246ba65d01c54..a3f736916c50abb37d5baa8f84e76d1274849949 100644
+--- a/packages/SystemUI/src/com/android/systemui/battery/BatteryMeterViewController.java
++++ b/packages/SystemUI/src/com/android/systemui/battery/BatteryMeterViewController.java
+@@ -51,6 +51,8 @@ import javax.inject.Inject;
+  * @deprecated once [NewStatusBarIcons] is rolled out, this class is no longer needed
+  */
+ public class BatteryMeterViewController extends ViewController<BatteryMeterView> {
++    private static final String BYPASS_CHARGE_ACTIVE = "bypass_charge_active";
++
+     private final ConfigurationController mConfigurationController;
+     private final TunerService mTunerService;
+     private final Handler mMainHandler;
+@@ -168,9 +170,11 @@ public class BatteryMeterViewController extends ViewController<BatteryMeterView>
+ 
+         registerShowBatteryPercentObserver(mUserTracker.getUserId());
+         registerGlobalBatteryUpdateObserver();
++        registerBypassChargingObserver();
+         mUserTracker.addCallback(mUserChangedCallback, new HandlerExecutor(mMainHandler));
+ 
+         mView.updateShowPercent();
++        updateBypassCharging();
+     }
+ 
+     @Override
+@@ -225,6 +229,18 @@ public class BatteryMeterViewController extends ViewController<BatteryMeterView>
+                 mSettingObserver);
+     }
+ 
++    private void registerBypassChargingObserver() {
++        mContentResolver.registerContentObserver(
++                Settings.Global.getUriFor(BYPASS_CHARGE_ACTIVE),
++                false,
++                mSettingObserver);
++    }
++
++    private void updateBypassCharging() {
++        mView.onBypassChargingChanged(Settings.Global.getInt(
++                mContentResolver, BYPASS_CHARGE_ACTIVE, 0) != 0);
++    }
++
+     private final class SettingObserver extends ContentObserver {
+         public SettingObserver(Handler handler) {
+             super(handler);
+@@ -234,6 +250,9 @@ public class BatteryMeterViewController extends ViewController<BatteryMeterView>
+         public void onChange(boolean selfChange, Uri uri) {
+             super.onChange(selfChange, uri);
+             mView.updateShowPercent();
++            if (TextUtils.equals(uri.getLastPathSegment(), BYPASS_CHARGE_ACTIVE)) {
++                updateBypassCharging();
++            }
+             if (TextUtils.equals(uri.getLastPathSegment(),
+                     Settings.Global.BATTERY_ESTIMATES_LAST_UPDATE_TIME)) {
+                 // update the text for sure if the estimate in the cache was updated
+diff --git a/packages/SystemUI/src/com/android/systemui/battery/ThemedBatteryBody.kt b/packages/SystemUI/src/com/android/systemui/battery/ThemedBatteryBody.kt
+index 4755a83d74ad04cf271197fb3aa53e2987e9041b..47823b6cc8f5063a93f3c06578f3dc56246e5665 100644
+--- a/packages/SystemUI/src/com/android/systemui/battery/ThemedBatteryBody.kt
++++ b/packages/SystemUI/src/com/android/systemui/battery/ThemedBatteryBody.kt
+@@ -99,7 +99,7 @@ private fun PathBatteryBody(
+     modifier: Modifier,
+     contentDescription: String,
+ ) {
+-    val isCharging = attr is BatteryGlyph.Bolt
++    val isCharging = attr is BatteryGlyph.Bolt || attr is BatteryGlyph.Bypass
+ 
+     Canvas(
+         modifier = modifier.graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen },
+@@ -177,7 +177,7 @@ private fun PillBatteryBody(
+         val level = levelProvider()
+         val colors = colorsProvider()
+         val showLevel = showLevelProvider()
+-        val isCharging = attr is BatteryGlyph.Bolt
++        val isCharging = attr is BatteryGlyph.Bolt || attr is BatteryGlyph.Bypass
+         val isPowerSave = attr is BatteryGlyph.Plus
+ 
+         val accentColor = colors.fill
+diff --git a/packages/SystemUI/src/com/android/systemui/battery/ThemedBatteryDrawable.kt b/packages/SystemUI/src/com/android/systemui/battery/ThemedBatteryDrawable.kt
+index 0c91f8ea2c470715029be647a655a9535cba4f8d..ae0708088f50595adfc844fd8402218db501e700 100644
+--- a/packages/SystemUI/src/com/android/systemui/battery/ThemedBatteryDrawable.kt
++++ b/packages/SystemUI/src/com/android/systemui/battery/ThemedBatteryDrawable.kt
+@@ -56,6 +56,9 @@ open class ThemedBatteryDrawable(private val context: Context, frameColor: Int)
+     private val boltPath = Path()
+     private val scaledBolt = Path()
+ 
++    private val bypassPath = Path()
++    private val scaledBypass = Path()
++
+     private val plusPath = Path()
+     private val scaledPlus = Path()
+ 
+@@ -94,6 +97,12 @@ open class ThemedBatteryDrawable(private val context: Context, frameColor: Int)
+             postInvalidate()
+         }
+ 
++    var bypassCharging = false
++        set(value) {
++            field = value
++            postInvalidate()
++        }
++
+     var powerSaveEnabled = false
+         set(value) {
+             field = value
+@@ -215,6 +224,7 @@ open class ThemedBatteryDrawable(private val context: Context, frameColor: Int)
+ 
+     override fun draw(c: Canvas) {
+         c.saveLayer(null, null)
++        val chargingPath = if (bypassCharging) scaledBypass else scaledBolt
+         unifiedPath.reset()
+         levelPath.reset()
+         levelRect.set(fillRect)
+@@ -262,9 +272,9 @@ open class ThemedBatteryDrawable(private val context: Context, frameColor: Int)
+         fillPaint.color = levelColor
+ 
+         if (charging) {
+-            unifiedPath.op(scaledBolt, Path.Op.DIFFERENCE)
++            unifiedPath.op(chargingPath, Path.Op.DIFFERENCE)
+             if (!boltKnockout && !invertFillIcon) {
+-                c.drawPath(scaledBolt, fillPaint)
++                c.drawPath(chargingPath, fillPaint)
+             }
+         }
+ 
+@@ -311,11 +321,11 @@ open class ThemedBatteryDrawable(private val context: Context, frameColor: Int)
+         }
+ 
+         if (charging && !boltKnockout) {
+-            c.clipOutPath(scaledBolt)
++            c.clipOutPath(chargingPath)
+             if (invertFillIcon) {
+-                c.drawPath(scaledBolt, fillColorStrokePaint)
++                c.drawPath(chargingPath, fillColorStrokePaint)
+             } else {
+-                c.drawPath(scaledBolt, fillColorStrokeProtection)
++                c.drawPath(chargingPath, fillColorStrokeProtection)
+             }
+         } else if (powerSaveEnabled) {
+             if (powerSaveDrawError) {
+@@ -369,8 +379,9 @@ open class ThemedBatteryDrawable(private val context: Context, frameColor: Int)
+         }
+         val pbHeight = pb.height()
+ 
+-        val hasBolt = charging && !scaledBolt.isEmpty
+-        if (hasBolt) scaledBolt.computeBounds(boltBoundsF, true)
++        val chargingPath = if (bypassCharging) scaledBypass else scaledBolt
++        val hasBolt = charging && !chargingPath.isEmpty
++        if (hasBolt) chargingPath.computeBounds(boltBoundsF, true)
+ 
+         val availableLeft: Float
+         val availableRight: Float
+@@ -562,6 +573,7 @@ open class ThemedBatteryDrawable(private val context: Context, frameColor: Int)
+         fillMask.transform(scaleMatrix, scaledFill)
+         scaledFill.computeBounds(fillRect, true)
+         boltPath.transform(scaleMatrix, scaledBolt)
++        bypassPath.transform(scaleMatrix, scaledBypass)
+         plusPath.transform(scaleMatrix, scaledPlus)
+ 
+         val scaledStrokeWidth =
+@@ -591,6 +603,10 @@ open class ThemedBatteryDrawable(private val context: Context, frameColor: Int)
+                 SysUiR.string.config_batterymeterBoltPath)
+         boltPath.set(PathParser.createPathFromPathData(boltPathString))
+ 
++        val bypassPathString = context.resources.getString(
++                SysUiR.string.config_batterymeterBypassPath)
++        bypassPath.set(PathParser.createPathFromPathData(bypassPathString))
++
+         val plusPathString = context.resources.getString(
+                 SysUiR.string.config_batterymeterPowersavePath)
+         plusPath.set(PathParser.createPathFromPathData(plusPathString))
+diff --git a/packages/SystemUI/src/com/android/systemui/lineage/LineageModule.kt b/packages/SystemUI/src/com/android/systemui/lineage/LineageModule.kt
+index 35a37156807a82544234c4c96db60bf27bb793ec..93e942c05ad172db37a8866560294b3a5c3a9c08 100644
+--- a/packages/SystemUI/src/com/android/systemui/lineage/LineageModule.kt
++++ b/packages/SystemUI/src/com/android/systemui/lineage/LineageModule.kt
+@@ -24,6 +24,7 @@ import com.android.systemui.qs.tiles.AmbientDisplayTile
+ import com.android.systemui.qs.tiles.AODTile
+ import com.android.systemui.qs.tiles.AutoBrightnessTile
+ import com.android.systemui.qs.tiles.BlurTile
++import com.android.systemui.qs.tiles.BypassChargingTile
+ import com.android.systemui.qs.tiles.CPUInfoTile
+ import com.android.systemui.qs.tiles.CaffeineTile
+ import com.android.systemui.qs.tiles.CompassTile
+@@ -86,6 +87,12 @@ interface LineageModule {
+     @StringKey(BlurTile.TILE_SPEC)
+     fun bindBlurTile(blurTile: BlurTile): QSTileImpl<*>
+ 
++    /** Inject BypassChargingTile into tileMap in QSModule */
++    @Binds
++    @IntoMap
++    @StringKey(BypassChargingTile.TILE_SPEC)
++    fun bindBypassChargingTile(tile: BypassChargingTile): QSTileImpl<*>
++
+     /** Inject CPUInfoTile into tileMap in QSModule */
+     @Binds
+     @IntoMap
+@@ -246,6 +253,7 @@ interface LineageModule {
+         const val AMBIENT_DISPLAY_TILE_SPEC = "ambient_display"
+         const val AOD_TILE_SPEC = "aod"
+         const val AUTO_BRIGHTNESS_TILE_SPEC = "autobrightness"
++        const val BYPASS_CHARGING_TILE_SPEC = "bypass_charging"
+         const val CAFFEINE_TILE_SPEC = "caffeine"
+         const val COMPASS_TILE_SPEC = "compass"
+         const val CPU_INFO_TILE_SPEC = "cpuinfo"
+@@ -357,6 +365,21 @@ interface LineageModule {
+                 category = TileCategory.ACCESSIBILITY,
+             )
+ 
++        @Provides
++        @IntoMap
++        @StringKey(BYPASS_CHARGING_TILE_SPEC)
++        fun provideBypassChargingTileConfig(uiEventLogger: QsEventLogger): QSTileConfig =
++            QSTileConfig(
++                tileSpec = TileSpec.create(BYPASS_CHARGING_TILE_SPEC),
++                uiConfig =
++                    QSTileUIConfig.Resource(
++                        iconRes = R.drawable.ic_qs_bypass_charging,
++                        labelRes = R.string.quick_settings_bypass_charging_label
++                    ),
++                instanceId = uiEventLogger.getNewInstanceId(),
++                category = TileCategory.UTILITIES,
++            )
++
+         @Provides
+         @IntoMap
+         @StringKey(POWERSHARE_TILE_SPEC)
+diff --git a/packages/SystemUI/src/com/android/systemui/qs/tiles/BypassChargingTile.java b/packages/SystemUI/src/com/android/systemui/qs/tiles/BypassChargingTile.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..937e04342fef5880f081e80c6ad1a9c0bae12327
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/qs/tiles/BypassChargingTile.java
+@@ -0,0 +1,169 @@
++/*
++ * Copyright (C) 2026 The Infinity-X Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.qs.tiles;
++
++import static com.android.internal.logging.MetricsLogger.VIEW_UNKNOWN;
++
++import android.content.Intent;
++import android.os.Handler;
++import android.os.Looper;
++import android.os.ServiceManager;
++import android.os.SystemProperties;
++import android.service.quicksettings.Tile;
++import android.util.Log;
++
++import androidx.annotation.Nullable;
++
++import com.android.internal.app.IGameSpaceService;
++import com.android.internal.logging.MetricsLogger;
++import com.android.systemui.animation.Expandable;
++import com.android.systemui.dagger.qualifiers.Background;
++import com.android.systemui.dagger.qualifiers.Main;
++import com.android.systemui.plugins.ActivityStarter;
++import com.android.systemui.plugins.FalsingManager;
++import com.android.systemui.plugins.qs.QSTile.BooleanState;
++import com.android.systemui.plugins.statusbar.StatusBarStateController;
++import com.android.systemui.qs.QSHost;
++import com.android.systemui.qs.QsEventLogger;
++import com.android.systemui.qs.logging.QSLogger;
++import com.android.systemui.qs.tileimpl.QSTileImpl;
++import com.android.systemui.res.R;
++import com.android.systemui.settings.UserTracker;
++import com.android.systemui.statusbar.policy.BatteryController;
++import com.android.systemui.util.settings.GlobalSettings;
++import com.android.systemui.util.settings.SettingObserver;
++
++import javax.inject.Inject;
++
++public class BypassChargingTile extends QSTileImpl<BooleanState>
++        implements BatteryController.BatteryStateChangeCallback {
++
++    public static final String TILE_SPEC = "bypass_charging";
++    private static final String SETTING_ACTIVE = "bypass_charge_active";
++
++    private final BatteryController mBatteryController;
++    private final SettingObserver mSetting;
++
++    @Nullable
++    private Icon mIcon;
++
++    @Inject
++    public BypassChargingTile(
++            QSHost host,
++            QsEventLogger uiEventLogger,
++            @Background Looper backgroundLooper,
++            @Main Handler mainHandler,
++            FalsingManager falsingManager,
++            MetricsLogger metricsLogger,
++            StatusBarStateController statusBarStateController,
++            ActivityStarter activityStarter,
++            QSLogger qsLogger,
++            GlobalSettings globalSettings,
++            UserTracker userTracker,
++            BatteryController batteryController) {
++        super(host, uiEventLogger, backgroundLooper, mainHandler, falsingManager, metricsLogger,
++                statusBarStateController, activityStarter, qsLogger);
++
++        mBatteryController = batteryController;
++        mBatteryController.observe(getLifecycle(), this);
++        mSetting = new SettingObserver(globalSettings, mHandler, SETTING_ACTIVE,
++                userTracker.getUserId()) {
++            @Override
++            protected void handleValueChanged(int value, boolean observedChange) {
++                handleRefreshState(value);
++            }
++        };
++    }
++
++    @Override
++    public boolean isAvailable() {
++        return SystemProperties.getBoolean("persist.sys.battery_bypass_supported", false);
++    }
++
++    @Override
++    public BooleanState newTileState() {
++        BooleanState state = new BooleanState();
++        state.handlesLongClick = false;
++        return state;
++    }
++
++    @Override
++    protected void handleClick(@Nullable Expandable expandable) {
++        try {
++            IGameSpaceService service = getGameSpaceService();
++            if (service == null) {
++                Log.w(TAG, "GameSpace service is not available");
++                return;
++            }
++            service.setBypassCharge(!mState.value);
++            refreshState();
++        } catch (Exception e) {
++            Log.e(TAG, "Failed to toggle bypass charging", e);
++        }
++    }
++
++    @Override
++    public Intent getLongClickIntent() {
++        return null;
++    }
++
++    @Override
++    public CharSequence getTileLabel() {
++        return mContext.getString(R.string.quick_settings_bypass_charging_label);
++    }
++
++    @Override
++    protected void handleUpdateState(BooleanState state, Object arg) {
++        int value = arg instanceof Integer ? (Integer) arg : mSetting.getValue();
++        state.value = value != 0;
++        state.label = mContext.getString(R.string.quick_settings_bypass_charging_label);
++        state.hasLongClickEffect = false;
++        if (mIcon == null) {
++            mIcon = maybeLoadResourceIcon(R.drawable.ic_qs_bypass_charging);
++        }
++        state.icon = mIcon;
++        state.state = !mBatteryController.isPluggedIn() && !state.value
++                ? Tile.STATE_UNAVAILABLE
++                : state.value ? Tile.STATE_ACTIVE : Tile.STATE_INACTIVE;
++    }
++
++    @Override
++    public int getMetricsCategory() {
++        return VIEW_UNKNOWN;
++    }
++
++    @Override
++    public void handleSetListening(boolean listening) {
++        super.handleSetListening(listening);
++        mSetting.setListening(listening);
++    }
++
++    @Override
++    protected void handleDestroy() {
++        mSetting.setListening(false);
++        super.handleDestroy();
++    }
++
++    @Override
++    public void onBatteryLevelChanged(int level, boolean pluggedIn, boolean charging) {
++        refreshState();
++    }
++
++    private IGameSpaceService getGameSpaceService() {
++        return IGameSpaceService.Stub.asInterface(ServiceManager.getService("game_space"));
++    }
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/KeyguardIndicationController.java b/packages/SystemUI/src/com/android/systemui/statusbar/KeyguardIndicationController.java
+index b6f7769d497711ff76e2d06361092fd3fc99b078..f20274ae7d9881728eca2fb2cbfbe3c59d810ad9 100644
+--- a/packages/SystemUI/src/com/android/systemui/statusbar/KeyguardIndicationController.java
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/KeyguardIndicationController.java
+@@ -90,6 +90,7 @@ import androidx.annotation.Nullable;
+ 
+ import com.android.internal.annotations.VisibleForTesting;
+ import com.android.internal.app.IBatteryStats;
++import com.android.internal.app.IGameSpaceService;
+ import com.android.internal.widget.LockPatternUtils;
+ import com.android.keyguard.KeyguardUpdateMonitor;
+ import com.android.keyguard.KeyguardUpdateMonitorCallback;
+@@ -166,6 +167,8 @@ public class KeyguardIndicationController {
+ 
+     public static final String TAG = "KeyguardIndication";
+     private static final boolean DEBUG_CHARGING_SPEED = false;
++    private static final String BYPASS_CHARGE_ACTIVE = "bypass_charge_active";
++    private static final long BYPASS_INFO_UPDATE_INTERVAL_MS = 5_000;
+ 
+     private static final int MSG_SHOW_ACTION_TO_UNLOCK = 1;
+     private static final int MSG_RESET_ERROR_MESSAGE_ON_SCREEN_ON = 2;
+@@ -261,6 +264,16 @@ public class KeyguardIndicationController {
+ 
+     private boolean mFaceDetectionRunning;
+ 
++    private final Runnable mBypassInfoUpdate = new Runnable() {
++        @Override
++        public void run() {
++            if (!mVisible || !isBypassChargingActive()) return;
++
++            updateDeviceEntryIndication(false);
++            mHandler.postDelayed(this, BYPASS_INFO_UPDATE_INTERVAL_MS);
++        }
++    };
++
+     private int mCurrentDivider;
+ 
+     private boolean mHasDashCharger;
+@@ -755,7 +768,8 @@ public class KeyguardIndicationController {
+     }
+ 
+     private void updateLockScreenBatteryMsg(boolean animate) {
+-        if (mBatteryPresent && (mPowerPluggedIn || mEnableBatteryDefender)) {
++        if (mBatteryPresent && (mPowerPluggedIn || mEnableBatteryDefender
++                || isBypassChargingActive())) {
+             String powerIndication = computePowerIndication();
+             if (DEBUG_CHARGING_SPEED) {
+                 powerIndication += ",  " + (mChargingWattage / 1000f) + " mW";
+@@ -1095,6 +1109,7 @@ public class KeyguardIndicationController {
+     public void setVisible(boolean visible) {
+         mVisible = visible;
+         mIndicationArea.setVisibility(visible ? VISIBLE : GONE);
++        updateBypassInfoPolling();
+         if (visible) {
+             // If this is called after an error message was already shown, we should not clear it.
+             // Otherwise the error message won't be shown
+@@ -1339,7 +1354,8 @@ public class KeyguardIndicationController {
+                 // If the battery level is not initialized, hide the indication area
+                 mIndicationArea.setVisibility(GONE);
+                 return;
+-            } else if (mPowerPluggedIn || mEnableBatteryDefender) {
++            } else if (mPowerPluggedIn || mEnableBatteryDefender
++                    || isBypassChargingActive()) {
+                 newIndication = computePowerIndication();
+             } else {
+                 newIndication = NumberFormat.getPercentInstance()
+@@ -1382,7 +1398,9 @@ public class KeyguardIndicationController {
+      * Assumption: device is charging
+      */
+     protected String computePowerIndication() {
+-        if (mBatteryDefender) {
++        if (isBypassChargingActive()) {
++            return computeBypassChargingIndication();
++        } else if (mBatteryDefender) {
+             String percentage = NumberFormat.getPercentInstance().format(mBatteryLevel / 100f);
+             return mContext.getResources().getString(
+                     R.string.keyguard_plugged_in_charging_limited, percentage);
+@@ -1395,6 +1413,40 @@ public class KeyguardIndicationController {
+         return computePowerChargingStringIndication();
+     }
+ 
++    private String computeBypassChargingIndication() {
++        String percentage = NumberFormat.getPercentInstance().format(mBatteryLevel / 100f);
++        long powerMicrowatts = getBypassChargePowerMicrowatts();
++        if (powerMicrowatts <= 0) {
++            return mContext.getString(R.string.keyguard_bypass_charging, percentage);
++        }
++
++        String power = String.format(Locale.US, "%.1f W", powerMicrowatts / 1_000_000f);
++        return mContext.getString(
++                R.string.keyguard_bypass_charging_with_power, percentage, power);
++    }
++
++    private boolean isBypassChargingActive() {
++        return Settings.Global.getInt(
++                mContext.getContentResolver(), BYPASS_CHARGE_ACTIVE, 0) != 0;
++    }
++
++    private long getBypassChargePowerMicrowatts() {
++        try {
++            IGameSpaceService service = IGameSpaceService.Stub.asInterface(
++                    ServiceManager.getService("game_space"));
++            return service != null ? service.getBypassChargePowerMicrowatts() : 0;
++        } catch (RemoteException e) {
++            return 0;
++        }
++    }
++
++    private void updateBypassInfoPolling() {
++        mHandler.removeCallbacks(mBypassInfoUpdate);
++        if (mVisible && isBypassChargingActive()) {
++            mHandler.post(mBypassInfoUpdate);
++        }
++    }
++
+     protected String computePowerChargingStringIndication() {
+         if (mPowerCharged) {
+             return mContext.getResources().getString(R.string.keyguard_charged);
+@@ -1677,11 +1729,13 @@ public class KeyguardIndicationController {
+             mBatteryStatus = status;
+             boolean isChargingOrFull = status.status == BatteryManager.BATTERY_STATUS_CHARGING
+                     || status.isCharged();
++            boolean bypassCharging = isBypassChargingActive() && status.isPluggedIn();
++            boolean externallyPowered = isChargingOrFull || bypassCharging;
+             boolean wasPluggedIn = mPowerPluggedIn;
+-            mPowerPluggedInWired = status.isPluggedInWired() && isChargingOrFull;
+-            mPowerPluggedInWireless = status.isPluggedInWireless() && isChargingOrFull;
+-            mPowerPluggedInDock = status.isPluggedInDock() && isChargingOrFull;
+-            mPowerPluggedIn = isPowerPluggedIn(status, isChargingOrFull);
++            mPowerPluggedInWired = status.isPluggedInWired() && externallyPowered;
++            mPowerPluggedInWireless = status.isPluggedInWireless() && externallyPowered;
++            mPowerPluggedInDock = status.isPluggedInDock() && externallyPowered;
++            mPowerPluggedIn = isPowerPluggedIn(status, externallyPowered);
+             mPowerCharged = status.isCharged();
+             updateChargingMeasurements(status, isChargingOrFull);
+             mChargingSpeed = status.getChargingSpeed(mContext);
+@@ -1694,6 +1748,7 @@ public class KeyguardIndicationController {
+             // when the battery is overheated, device doesn't charge so only guard on pluggedIn:
+             mEnableBatteryDefender = mBatteryDefender && status.isPluggedIn();
+             mIncompatibleCharger = status.incompatibleCharger.orElse(false);
++            updateBypassInfoPolling();
+             if (ScrimUtils.get().isKeyguardShowing()) {
+                 try {
+                     if (mPowerPluggedIn) {
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/data/repository/BatteryRepository.kt b/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/data/repository/BatteryRepository.kt
+index 39a994f8b6fb89ffe0903fa98f125c86edb5f09e..d7519ac72cf3701e0c48ed2f64c12778eea67318 100644
+--- a/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/data/repository/BatteryRepository.kt
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/data/repository/BatteryRepository.kt
+@@ -21,6 +21,7 @@ import android.database.ContentObserver
+ import android.os.Handler
+ import android.os.Looper
+ import android.os.UserHandle
++import android.provider.Settings
+ import com.android.systemui.dagger.SysUISingleton
+ import com.android.systemui.dagger.qualifiers.Application
+ import com.android.systemui.dagger.qualifiers.Background
+@@ -72,6 +73,9 @@ interface BatteryRepository {
+     /** True if the system has detected an incompatible charger (and thus is not charging) */
+     val isIncompatibleCharging: Flow<Boolean>
+ 
++    /** True while charging is being bypassed with external power connected. */
++    val isBypassCharging: Flow<Boolean>
++
+     /** The current level [0-100] */
+     val level: Flow<Int?>
+ 
+@@ -261,6 +265,30 @@ constructor(
+                 batteryState.value.isIncompatibleCharging,
+             )
+ 
++    override val isBypassCharging =
++        callbackFlow {
++                val resolver = context.contentResolver
++                val uri = Settings.Global.getUriFor(BYPASS_CHARGE_ACTIVE)
++                val observer =
++                    object : ContentObserver(Handler(Looper.getMainLooper())) {
++                        override fun onChange(selfChange: Boolean) {
++                            trySend(
++                                Settings.Global.getInt(
++                                    resolver,
++                                    BYPASS_CHARGE_ACTIVE,
++                                    0,
++                                ) != 0
++                            )
++                        }
++                    }
++
++                resolver.registerContentObserver(uri, false, observer)
++                trySend(Settings.Global.getInt(resolver, BYPASS_CHARGE_ACTIVE, 0) != 0)
++                awaitClose { resolver.unregisterContentObserver(observer) }
++            }
++            .flowOn(bgDispatcher)
++            .distinctUntilChanged()
++
+     override val level =
+         batteryState
+             .map { it.level }
+@@ -416,6 +444,7 @@ constructor(
+     }
+ 
+     companion object {
++        private const val BYPASS_CHARGE_ACTIVE = "bypass_charge_active"
+         private const val COL_PLUGGED_IN = "pluggedIn"
+         private const val COL_POWER_SAVE = "powerSave"
+         private const val COL_EXTREME_POWER_SAVE = "extremePowerSave"
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/domain/interactor/BatteryInteractor.kt b/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/domain/interactor/BatteryInteractor.kt
+index 2391244829ee0ee4a2063c53ce694434d9ab63c1..ccdd4da34c310e1b675f5ed0e81304853310c0d1 100644
+--- a/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/domain/interactor/BatteryInteractor.kt
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/domain/interactor/BatteryInteractor.kt
+@@ -76,6 +76,9 @@ class BatteryInteractor @Inject constructor(
+     /** @see [BatteryRepository.isBatteryDefenderEnabled] */
+     val isBatteryDefenderEnabled = repo.isBatteryDefenderEnabled
+ 
++    /** @see [BatteryRepository.isBypassCharging] */
++    val isBypassCharging = repo.isBypassCharging
++
+     /** @see [BatteryRepository.isPowerSaveEnabled] */
+     val powerSave = repo.isPowerSaveEnabled
+ 
+@@ -105,17 +108,26 @@ class BatteryInteractor @Inject constructor(
+      * This flow can be used to canonically describe the battery state charging state.
+      */
+     val batteryAttributionType =
+-        combine(isCharging, powerSave, isBatteryDefenderEnabled, isStateUnknown) {
++        combine(
++            isCharging,
++            powerSave,
++            isBatteryDefenderEnabled,
++            isStateUnknown,
++            isBypassCharging,
++        ) {
+             charging,
+             powerSave,
+             defend,
+-            unknown ->
++            unknown,
++            bypass ->
+             if (unknown) {
+                 BatteryAttributionModel.Unknown
+             } else if (powerSave) {
+                 BatteryAttributionModel.PowerSave
+             } else if (defend) {
+                 BatteryAttributionModel.Defend
++            } else if (charging && bypass) {
++                BatteryAttributionModel.Bypass
+             } else if (charging) {
+                 BatteryAttributionModel.Charging
+             } else {
+@@ -136,6 +148,7 @@ class BatteryInteractor @Inject constructor(
+ 
+ /** The charging state, and therefore attribution for the battery */
+ enum class BatteryAttributionModel {
++    Bypass,
+     Defend,
+     PowerSave,
+     Charging,
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/shared/ui/BatteryGlyph.kt b/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/shared/ui/BatteryGlyph.kt
+index d103ee863eb24999a34e3b3d37fea42415bcce02..0d111f055337130157ac466078233f0cee461c87 100644
+--- a/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/shared/ui/BatteryGlyph.kt
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/shared/ui/BatteryGlyph.kt
+@@ -110,6 +110,18 @@ sealed interface BatteryGlyph : Glyph {
+         override val height: Float = 9.00f
+     }
+ 
++    data object Bypass : BatteryGlyph {
++        override val path: Path =
++            Path().apply {
++                addSvg(
++                    "M1.36,0.72H3.12V3.36H4.88V0.72H6.64V3.36H7.52V6C7.52,7.94 5.94,9.52 4,9.52C2.06,9.52 0.48,7.94 0.48,6V3.36H1.36V0.72ZM3.12,9.52H4.88V11.28H3.12V9.52Z"
++                )
++            }
++
++        override val width: Float = 8.00f
++        override val height: Float = 12.00f
++    }
++
+     data object Plus : BatteryGlyph {
+         override val path: Path =
+             Path().apply {
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/ui/composable/UnifiedBattery.kt b/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/ui/composable/UnifiedBattery.kt
+index 5b24d4366f424571869365938528fa34fe6eea32..0ca553dd859fce8d99d93c467e9243a24f6f00bc 100644
+--- a/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/ui/composable/UnifiedBattery.kt
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/ui/composable/UnifiedBattery.kt
+@@ -466,7 +466,11 @@ fun CircleBatteryBody(
+         // Draw colored arc representing charge level
+         if (level != null && level > 0) {
+             drawArc(
+-                if (attr is BatteryGlyph.Bolt || attr is BatteryGlyph.Defend) {
++                if (
++                    attr is BatteryGlyph.Bolt ||
++                        attr is BatteryGlyph.Bypass ||
++                        attr is BatteryGlyph.Defend
++                ) {
+                     BatteryColors.DarkTheme.Charging.fill
+                 } else if (attr is BatteryGlyph.Plus) {
+                     BatteryColors.DarkTheme.PowerSave.fill
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/ui/viewmodel/BatteryViewModel.kt b/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/ui/viewmodel/BatteryViewModel.kt
+index adcb0998d19428c0ea8a7e4e8e9f181bbcf9ed02..612e795b8622bdcdb2831e8eb74c8262779266fe 100644
+--- a/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/ui/viewmodel/BatteryViewModel.kt
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/battery/ui/viewmodel/BatteryViewModel.kt
+@@ -30,6 +30,7 @@ import com.android.systemui.lifecycle.HydratedActivatable
+ import com.android.systemui.res.R
+ import com.android.systemui.statusbar.pipeline.battery.data.repository.BatteryRepository
+ import com.android.systemui.statusbar.pipeline.battery.domain.interactor.BatteryAttributionModel.Charging
++import com.android.systemui.statusbar.pipeline.battery.domain.interactor.BatteryAttributionModel.Bypass
+ import com.android.systemui.statusbar.pipeline.battery.domain.interactor.BatteryAttributionModel.Defend
+ import com.android.systemui.statusbar.pipeline.battery.domain.interactor.BatteryAttributionModel.PowerSave
+ import com.android.systemui.statusbar.pipeline.battery.domain.interactor.BatteryAttributionModel.Unknown
+@@ -105,6 +106,8 @@ sealed class BatteryViewModel(
+     protected val attributionGlyph: Flow<BatteryGlyph?> =
+         interactor.batteryAttributionType.map {
+             when (it) {
++                Bypass -> BatteryGlyph.Bypass
++
+                 Charging -> BatteryGlyph.Bolt
+ 
+                 PowerSave -> BatteryGlyph.Plus
+@@ -122,6 +125,7 @@ sealed class BatteryViewModel(
+     private val _colorProfile: Flow<ColorProfile> =
+         combine(interactor.batteryAttributionType, interactor.isCritical) { attr, isCritical ->
+             when (attr) {
++                Bypass,
+                 Charging,
+                 Defend ->
+                     ColorProfile(
+diff --git a/services/core/java/com/android/server/wm/GameSpaceService.java b/services/core/java/com/android/server/wm/GameSpaceService.java
+index 2847bdd9c8a09aab87275aed123649379c51473f..891b04e60bc2aa41281053a4e4c34411aa7642ff 100644
+--- a/services/core/java/com/android/server/wm/GameSpaceService.java
++++ b/services/core/java/com/android/server/wm/GameSpaceService.java
+@@ -17,13 +17,17 @@ package com.android.server.wm;
+ 
+ import static android.app.WindowConfiguration.WINDOWING_MODE_FREEFORM;
+ 
++import android.Manifest;
+ import android.content.ComponentName;
+ import android.content.Context;
+ import android.content.Intent;
++import android.os.Binder;
+ import android.os.Handler;
+ import android.os.Process;
+ import android.util.Slog;
+ 
++import com.android.internal.app.IGameSpaceService;
++
+ import com.android.server.LocalServices;
+ import com.android.server.ServiceThread;
+ import com.android.server.SystemService;
+@@ -55,8 +59,47 @@ public final class GameSpaceService extends SystemService {
+     @Override
+     public void onStart() {
+         publishLocalService(GameSpaceService.class, this);
++        publishBinderService("game_space", mBinder);
+     }
+ 
++    private final IGameSpaceService.Stub mBinder = new IGameSpaceService.Stub() {
++        @Override
++        public void setBypassCharge(boolean enabled) {
++            getContext().enforceCallingOrSelfPermission(
++                    Manifest.permission.WRITE_SECURE_SETTINGS, TAG);
++            final long token = Binder.clearCallingIdentity();
++            try {
++                mGameStateDispatcher.setBypassCharge(enabled);
++            } finally {
++                Binder.restoreCallingIdentity(token);
++            }
++        }
++
++        @Override
++        public boolean isBypassChargeActive() {
++            getContext().enforceCallingOrSelfPermission(
++                    Manifest.permission.WRITE_SECURE_SETTINGS, TAG);
++            final long token = Binder.clearCallingIdentity();
++            try {
++                return mGameStateDispatcher.isBypassChargeActive();
++            } finally {
++                Binder.restoreCallingIdentity(token);
++            }
++        }
++
++        @Override
++        public long getBypassChargePowerMicrowatts() {
++            getContext().enforceCallingOrSelfPermission(
++                    Manifest.permission.WRITE_SECURE_SETTINGS, TAG);
++            final long token = Binder.clearCallingIdentity();
++            try {
++                return mGameStateDispatcher.getBypassChargePowerMicrowatts();
++            } finally {
++                Binder.restoreCallingIdentity(token);
++            }
++        }
++    };
++
+     @Override
+     public void onBootPhase(int phase) {
+         if (phase == PHASE_ACTIVITY_MANAGER_READY) {
+@@ -118,6 +161,7 @@ public final class GameSpaceService extends SystemService {
+             return;
+         }
+         mStarted = true;
++        mGameStateDispatcher.onStart();
+         mGamePackageHandler.registerPackageReceiver();
+         mGameListManager.registerGameListObserver(mHandler);
+         mGameListManager.addListener(() -> mHandler.post(() -> {
+diff --git a/services/core/java/com/android/server/wm/GameStateDispatcher.java b/services/core/java/com/android/server/wm/GameStateDispatcher.java
+index 967ceb0842799a123093636e62faa213795bcf09..db01638c4f76930166166d8627ed43768a055201 100644
+--- a/services/core/java/com/android/server/wm/GameStateDispatcher.java
++++ b/services/core/java/com/android/server/wm/GameStateDispatcher.java
+@@ -17,10 +17,13 @@ package com.android.server.wm;
+ 
+ import android.app.ActivityManager;
+ import android.app.IActivityManager;
++import android.content.BroadcastReceiver;
+ import android.content.ComponentName;
+ import android.content.Context;
+ import android.content.Intent;
++import android.content.IntentFilter;
+ import android.os.BatteryManager;
++import android.os.FileUtils;
+ import android.os.RemoteException;
+ import android.os.SystemProperties;
+ import android.os.UserHandle;
+@@ -29,6 +32,8 @@ import android.util.Slog;
+ 
+ import lineageos.health.HealthInterface;
+ 
++import java.io.File;
++
+ class GameStateDispatcher {
+     private static final String TAG = "GameStateDispatcher";
+     private static final String GAME_SPACE_PACKAGE = "io.chaldeaprjkt.gamespace";
+@@ -40,6 +45,13 @@ class GameStateDispatcher {
+     private static final String EXTRA_PACKAGE_NAME = "package_name";
+     private static final String KEY_GAMING_MODE_ACTIVE = "ax_gaming_mode_active";
+     private static final String KEY_BYPASS_CHARGE_ENABLED = "bypass_charge_enabled";
++    static final String KEY_BYPASS_CHARGE_ACTIVE = "bypass_charge_active";
++    private static final String KEY_BYPASS_SAVED_ENABLED = "bypass_charge_saved_enabled";
++    private static final String KEY_BYPASS_SAVED_MODE = "bypass_charge_saved_mode";
++    private static final String KEY_BYPASS_SAVED_LIMIT = "bypass_charge_saved_limit";
++    private static final String PROP_BYPASS_SUPPORTED = "persist.sys.battery_bypass_supported";
++    private static final String USB_CURRENT_NOW = "/sys/class/power_supply/usb/current_now";
++    private static final String USB_VOLTAGE_NOW = "/sys/class/power_supply/usb/voltage_now";
+     private static final String KEY_POWER_MODE_PERF_BY_USER = "power_mode_perf_by_user";
+     private static final String KEY_POWER_MODE_PERF = "persist.sys.power_mode_perf";
+     private static final int DEFAULT_CHARGE_LIMIT = 100;
+@@ -47,20 +59,50 @@ class GameStateDispatcher {
+     private final Context mContext;
+     private final IActivityManager mActivityManager;
+ 
+-    private int mChargeControlLimit = DEFAULT_CHARGE_LIMIT;
+-    private boolean mWasChargingControlEnabled;
+-    private boolean mBypassChargeActive;
++    private boolean mGameBypassRequested;
++    private boolean mManualBypassRequested;
++    private boolean mBypassActive;
+ 
+     GameStateDispatcher(Context context) {
+         mContext = context;
+         mActivityManager = ActivityManager.getService();
+     }
+ 
++    /** Called once GameSpace starts, when the health and battery services are available. */
++    void onStart() {
++        synchronized (this) {
++            mBypassActive = Settings.Global.getInt(mContext.getContentResolver(),
++                    KEY_BYPASS_CHARGE_ACTIVE, 0) == 1;
++            if (mBypassActive) {
++                // A previous system_server left bypass on; put charging control back.
++                restoreBypassState();
++            }
++        }
++
++        final IntentFilter powerFilter = new IntentFilter();
++        powerFilter.addAction(Intent.ACTION_POWER_CONNECTED);
++        powerFilter.addAction(Intent.ACTION_POWER_DISCONNECTED);
++        mContext.registerReceiver(new BroadcastReceiver() {
++            @Override
++            public void onReceive(Context context, Intent intent) {
++                synchronized (GameStateDispatcher.this) {
++                    if (Intent.ACTION_POWER_DISCONNECTED.equals(intent.getAction())) {
++                        mManualBypassRequested = false;
++                    }
++                    updateBypassState();
++                }
++            }
++        }, powerFilter, Context.RECEIVER_NOT_EXPORTED);
++    }
++
+     void dispatchGameState(boolean active, String packageName) {
+         Settings.Secure.putIntForUser(mContext.getContentResolver(), KEY_GAMING_MODE_ACTIVE,
+                 active ? 1 : 0, UserHandle.USER_CURRENT);
+         updateGameSession(active, packageName);
+-        updateBypassCharge(active);
++        synchronized (this) {
++            mGameBypassRequested = active && bypassChargeEnabled();
++            updateBypassState();
++        }
+     }
+ 
+     void boostGame(boolean enable) {
+@@ -111,42 +153,118 @@ class GameStateDispatcher {
+         }
+     }
+ 
+-    private void updateBypassCharge(boolean active) {
+-        if (active) {
+-            if (!bypassChargeEnabled()) {
+-                return;
+-            }
+-            mChargeControlLimit = getChargingLimit();
+-            setBypassActive(true);
+-            setSmartChargeLevel(batteryLevel());
+-            mBypassChargeActive = true;
+-            return;
++    synchronized void setBypassCharge(boolean enable) {
++        Slog.i(TAG, "Manual charging bypass " + (enable ? "requested" : "disabled"));
++        mManualBypassRequested = enable;
++        if (!enable) {
++            mGameBypassRequested = false;
+         }
++        updateBypassState();
++    }
+ 
+-        if (!mBypassChargeActive) {
+-            return;
++    synchronized boolean isBypassChargeActive() {
++        return mBypassActive;
++    }
++
++    synchronized long getBypassChargePowerMicrowatts() {
++        if (!mBypassActive) {
++            return 0;
++        }
++        final long currentMicroamps = readLong(USB_CURRENT_NOW);
++        final long voltageMicrovolts = readLong(USB_VOLTAGE_NOW);
++        if (currentMicroamps <= 0 || voltageMicrovolts <= 0) {
++            return 0;
++        }
++        return currentMicroamps * voltageMicrovolts / 1_000_000L;
++    }
++
++    private long readLong(String path) {
++        try {
++            return Long.parseLong(FileUtils.readTextFile(new File(path), 64, null).trim());
++        } catch (Exception e) {
++            Slog.w(TAG, "Failed to read " + path, e);
++            return 0;
+         }
+-        setBypassActive(false);
+-        setSmartChargeLevel(mChargeControlLimit);
+-        mBypassChargeActive = false;
+     }
+ 
+     private boolean bypassChargeEnabled() {
+-        return Settings.System.getIntForUser(mContext.getContentResolver(),
++        return SystemProperties.getBoolean(PROP_BYPASS_SUPPORTED, false)
++                && Settings.System.getIntForUser(mContext.getContentResolver(),
+                 KEY_BYPASS_CHARGE_ENABLED, 0, UserHandle.USER_CURRENT) == 1;
+     }
+ 
+-    private int getChargingLimit() {
++    private synchronized void updateBypassState() {
++        final boolean shouldEnable = isPowerConnected()
++                && (mGameBypassRequested || mManualBypassRequested);
++        if (shouldEnable == mBypassActive) {
++            return;
++        }
++        if (shouldEnable) {
++            enableBypass();
++        } else {
++            restoreBypassState();
++        }
++    }
++
++    private boolean isPowerConnected() {
++        final Intent battery = mContext.registerReceiver(
++                null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
++        return battery != null && battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0;
++    }
++
++    private void enableBypass() {
++        final int level = batteryLevel();
++        if (level < 0) {
++            return;
++        }
++
++        HealthInterface health = null;
++        boolean savedEnabled = false;
++        int savedMode = HealthInterface.MODE_LIMIT;
++        int savedLimit = DEFAULT_CHARGE_LIMIT;
++        boolean savedStateRead = false;
+         try {
+-            final HealthInterface health = HealthInterface.getInstance(mContext);
+-            mWasChargingControlEnabled = health.getEnabled();
+-            if (mWasChargingControlEnabled) {
+-                return health.getLimit();
++            health = HealthInterface.getInstance(mContext);
++            savedEnabled = health.getEnabled();
++            savedMode = health.getMode();
++            savedLimit = health.getLimit();
++            savedStateRead = true;
++
++            Settings.Global.putInt(mContext.getContentResolver(),
++                    KEY_BYPASS_SAVED_ENABLED, savedEnabled ? 1 : 0);
++            Settings.Global.putInt(mContext.getContentResolver(),
++                    KEY_BYPASS_SAVED_MODE, savedMode);
++            Settings.Global.putInt(mContext.getContentResolver(),
++                    KEY_BYPASS_SAVED_LIMIT, savedLimit);
++
++            boolean success = health.setEnabled(false);
++            success &= health.setMode(HealthInterface.MODE_LIMIT);
++            success &= health.setLimit(level);
++            Settings.Global.putInt(mContext.getContentResolver(),
++                    KEY_BYPASS_CHARGE_ACTIVE, 1);
++            success &= health.setEnabled(true);
++            if (!success) {
++                Slog.w(TAG, "Failed to enable charging bypass");
++                Settings.Global.putInt(mContext.getContentResolver(),
++                        KEY_BYPASS_CHARGE_ACTIVE, 0);
++                restoreChargingControl(health, savedEnabled, savedMode, savedLimit);
++                return;
+             }
++
++            mBypassActive = true;
++            Slog.i(TAG, "Charging bypass enabled at " + level + "%");
+         } catch (Exception e) {
+-            Slog.w(TAG, "Failed to get charging limit", e);
++            Slog.w(TAG, "Failed to enable charging bypass", e);
++            Settings.Global.putInt(mContext.getContentResolver(),
++                    KEY_BYPASS_CHARGE_ACTIVE, 0);
++            if (health != null && savedStateRead) {
++                try {
++                    restoreChargingControl(health, savedEnabled, savedMode, savedLimit);
++                } catch (Exception restoreError) {
++                    Slog.w(TAG, "Failed to roll back charging control", restoreError);
++                }
++            }
+         }
+-        return DEFAULT_CHARGE_LIMIT;
+     }
+ 
+     private int batteryLevel() {
+@@ -157,25 +275,37 @@ class GameStateDispatcher {
+         return batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY);
+     }
+ 
+-    private void setSmartChargeLevel(int value) {
+-        if (value < 0) {
++    private void restoreBypassState() {
++        if (!mBypassActive) {
+             return;
+         }
+         try {
+             final HealthInterface health = HealthInterface.getInstance(mContext);
+-            health.setMode(HealthInterface.MODE_LIMIT);
+-            health.setLimit(value);
++            final boolean savedEnabled = Settings.Global.getInt(mContext.getContentResolver(),
++                    KEY_BYPASS_SAVED_ENABLED, 0) == 1;
++            final int savedMode = Settings.Global.getInt(mContext.getContentResolver(),
++                    KEY_BYPASS_SAVED_MODE, HealthInterface.MODE_LIMIT);
++            final int savedLimit = Settings.Global.getInt(mContext.getContentResolver(),
++                    KEY_BYPASS_SAVED_LIMIT, DEFAULT_CHARGE_LIMIT);
++            Settings.Global.putInt(mContext.getContentResolver(),
++                    KEY_BYPASS_CHARGE_ACTIVE, 0);
++            restoreChargingControl(health, savedEnabled, savedMode, savedLimit);
+         } catch (Exception e) {
+-            Slog.w(TAG, "Failed to set charging limit", e);
++            Slog.w(TAG, "Failed to restore charging control", e);
++            Settings.Global.putInt(mContext.getContentResolver(),
++                    KEY_BYPASS_CHARGE_ACTIVE, 1);
++            return;
+         }
++
++        mBypassActive = false;
++        Slog.i(TAG, "Charging bypass disabled and charging control restored");
+     }
+ 
+-    private void setBypassActive(boolean value) {
+-        try {
+-            final HealthInterface health = HealthInterface.getInstance(mContext);
+-            health.setEnabled(value || mWasChargingControlEnabled);
+-        } catch (Exception e) {
+-            Slog.w(TAG, "Failed to set charging bypass", e);
+-        }
++    private void restoreChargingControl(HealthInterface health, boolean enabled,
++            int mode, int limit) {
++        health.setEnabled(false);
++        health.setMode(mode);
++        health.setLimit(limit);
++        health.setEnabled(enabled);
+     }
+ }

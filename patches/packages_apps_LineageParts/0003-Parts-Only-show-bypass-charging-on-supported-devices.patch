@@ -1,0 +1,50 @@
+From 4eb3693cf3da5ae3ccd4a27937dc2443c1037ea4 Mon Sep 17 00:00:00 2001
+From: blazerpaul15 <blazerpaul15@gmail.com>
+Date: Sun, 22 Nov 2026 22:56:06 +0900
+Subject: [PATCH] Parts: Only show bypass charging on supported devices
+
+Hide the bypass charging switch unless the device sets
+persist.sys.battery_bypass_supported, matching the BypassChargingTile
+in SystemUI and GameStateDispatcher, which ignore bypass requests on
+unsupported devices.
+
+Assisted-by: LLM
+Change-Id: I678e718a350281b045fd86267d4577cbd5cf1802
+
+diff --git a/src/org/lineageos/lineageparts/health/ChargingControlSettings.java b/src/org/lineageos/lineageparts/health/ChargingControlSettings.java
+index 6d15f484188968c3aea55347dac0fab1f36e14e5..8bf75a5e7e953c2582f1b17eb39eb723007f9f72 100644
+--- a/src/org/lineageos/lineageparts/health/ChargingControlSettings.java
++++ b/src/org/lineageos/lineageparts/health/ChargingControlSettings.java
+@@ -15,6 +15,7 @@ import android.net.Uri;
+ import android.os.Bundle;
+ import android.os.RemoteException;
+ import android.os.ServiceManager;
++import android.os.SystemProperties;
+ import android.provider.Settings;
+ import android.util.ArraySet;
+ import android.view.Menu;
+@@ -57,6 +58,7 @@ public class ChargingControlSettings extends SettingsPreferenceFragment implemen
+     private static final String BYPASS_SAVED_ENABLED = "bypass_charge_saved_enabled";
+     private static final String BYPASS_SAVED_MODE = "bypass_charge_saved_mode";
+     private static final String BYPASS_SAVED_LIMIT = "bypass_charge_saved_limit";
++    private static final String PROP_BYPASS_SUPPORTED = "persist.sys.battery_bypass_supported";
+ 
+     private LineageSystemSettingMainSwitchPreference mChargingControlEnabledPref;
+     private LineageSystemSettingListPreference mChargingControlModePref;
+@@ -90,7 +92,15 @@ public class ChargingControlSettings extends SettingsPreferenceFragment implemen
+         mChargingControlTargetTimePref = prefSet.findPreference(CHARGING_CONTROL_TARGET_TIME_PREF);
+         mChargingControlLimitPref = prefSet.findPreference(CHARGING_CONTROL_LIMIT_PREF);
+         mBypassChargingPref = prefSet.findPreference(BYPASS_CHARGING_PREF);
+-        mBypassChargingPref.setOnPreferenceChangeListener(this);
++        if (mBypassChargingPref != null) {
++            if (SystemProperties.getBoolean(PROP_BYPASS_SUPPORTED, false)) {
++                mBypassChargingPref.setOnPreferenceChangeListener(this);
++            } else {
++                prefSet.removePreference(mBypassChargingPref);
++                mBypassChargingPref = null;
++            }
++        }
++
+         if (mChargingControlLimitPref != null) {
+             if (mHealthInterface.allowFineGrainedSettings()) {
+                 mChargingControlModePref.setEntries(concatStringArrays(

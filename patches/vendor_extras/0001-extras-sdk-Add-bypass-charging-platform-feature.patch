@@ -1,0 +1,35 @@
+From a577edc083cf2148edb8099af8812e36ddd03c13 Mon Sep 17 00:00:00 2001
+From: blazerpaul15 <blazerpaul15@gmail.com>
+Date: Sun, 22 Nov 2026 16:50:45 +0900
+Subject: [PATCH] extras: sdk: Add bypass charging platform feature
+
+Assisted-by: LLM
+
+diff --git a/sdk/ax_platform_hooks/src/com/android/axion/platform/AxPlatformClient.java b/sdk/ax_platform_hooks/src/com/android/axion/platform/AxPlatformClient.java
+index b4ede08c3dbc134f3e7fa636e5483db11cfa44cf..1ae0eee6a2c0660e73993a6b181703d099dc3900 100644
+--- a/sdk/ax_platform_hooks/src/com/android/axion/platform/AxPlatformClient.java
++++ b/sdk/ax_platform_hooks/src/com/android/axion/platform/AxPlatformClient.java
+@@ -71,6 +71,7 @@ public class AxPlatformClient {
+     public static final String FEATURE_DREAM = "dream";
+     public static final String FEATURE_READING_MODE = "reading_mode";
+     public static final String FEATURE_POWER_SHARE = "power_share";
++    public static final String FEATURE_BYPASS_CHARGING = "bypass_charging";
+     public static final String FEATURE_CAFFEINE = "caffeine";
+     public static final String FEATURE_VPN = "vpn";
+     public static final String FEATURE_CAST = "cast";
+@@ -153,6 +154,7 @@ public class AxPlatformClient {
+         SPEC_TO_FEATURE.put("reading_mode", FEATURE_READING_MODE);
+         SPEC_TO_FEATURE.put("power_share", FEATURE_POWER_SHARE);
+         SPEC_TO_FEATURE.put("reverse", FEATURE_POWER_SHARE);
++        SPEC_TO_FEATURE.put("bypass_charging", FEATURE_BYPASS_CHARGING);
+         SPEC_TO_FEATURE.put("caffeine", FEATURE_CAFFEINE);
+         SPEC_TO_FEATURE.put("vpn", FEATURE_VPN);
+         SPEC_TO_FEATURE.put("cast", FEATURE_CAST);
+@@ -186,6 +188,7 @@ public class AxPlatformClient {
+         FEATURE_TO_CATEGORY.put(FEATURE_BATTERY_SAVER, CATEGORY_POWER);
+         FEATURE_TO_CATEGORY.put(FEATURE_FLASHLIGHT, CATEGORY_POWER);
+         FEATURE_TO_CATEGORY.put(FEATURE_POWER_SHARE, CATEGORY_POWER);
++        FEATURE_TO_CATEGORY.put(FEATURE_BYPASS_CHARGING, CATEGORY_POWER);
+         FEATURE_TO_CATEGORY.put(FEATURE_LOCATION, CATEGORY_SYSTEM);
+         FEATURE_TO_CATEGORY.put(FEATURE_AUTO_SYNC, CATEGORY_SYSTEM);
+         FEATURE_TO_CATEGORY.put(FEATURE_ONE_HANDED_MODE, CATEGORY_SYSTEM);

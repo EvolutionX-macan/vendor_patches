@@ -1,0 +1,69 @@
+From 268c6dbc6d9508182e6e6e4b51d50338ca58a8dc Mon Sep 17 00:00:00 2001
+From: blazerpaul15 <blazerpaul15@gmail.com>
+Date: Sun, 22 Nov 2026 10:04:35 +0900
+Subject: [PATCH] libgui: add the two missing Oplus IGraphicBufferProducer OEM
+ slots
+
+OOS libgui has eight OEM virtuals between getConsumerUsage() and
+setAutoPrerotation(), not six. The Bp proxies at OOS vtable slots 43
+and 44 transact codes 45 (no args, readBool reply) and 46 (writeInt32
+arg, readInt32 reply). Without them, every slot from setAutoPrerotation
+on (setFrameRate, the batched requestBuffers..query, exportToParcel) sat
+two entries earlier than in OOS, so OEM prebuilts calling those through
+the vtable hit the wrong method.
+
+Verified against OOS 16.0.10 libgui: BpGraphicBufferProducer slots
+now line up one-to-one up to exportToParcel; the A17-only virtuals stay
+after it.
+
+Assisted-by: LLM
+
+diff --git a/libs/gui/IGraphicBufferProducer.cpp b/libs/gui/IGraphicBufferProducer.cpp
+index 73d7102f4a15e7407d4b5a96df32e969187b2673..cb0545fa0b54c69d527d94b8f88496375458c5d6 100644
+--- a/libs/gui/IGraphicBufferProducer.cpp
++++ b/libs/gui/IGraphicBufferProducer.cpp
+@@ -1143,6 +1143,17 @@ status_t IGraphicBufferProducer::oplusGbpSetExtension3(int32_t value) {
+     return INVALID_OPERATION;
+ }
+ 
++bool IGraphicBufferProducer::oplusGbpGetExtension4() {
++    // OOS libgui transaction code 45.
++    return false;
++}
++
++int32_t IGraphicBufferProducer::oplusGbpSetExtension4(int32_t value) {
++    // OOS libgui transaction code 46.
++    (void)value;
++    return INVALID_OPERATION;
++}
++
+ #if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(BQ_EXTENDEDALLOCATE)
+ status_t IGraphicBufferProducer::setAdditionalOptions(const std::vector<gui::AdditionalOptions>&) {
+     // No-op for IGBP other than BufferQueue.
+diff --git a/libs/gui/include/gui/IGraphicBufferProducer.h b/libs/gui/include/gui/IGraphicBufferProducer.h
+index 447688ede9e5a50430bd725f7e934636e8e3e0d7..8b72373f19bb25f34c34d87191628a55a58dfa7d 100644
+--- a/libs/gui/include/gui/IGraphicBufferProducer.h
++++ b/libs/gui/include/gui/IGraphicBufferProducer.h
+@@ -745,11 +745,11 @@ public:
+     virtual status_t getConsumerUsage(uint64_t* outUsage) const = 0;
+ 
+     // --- Oplus/OnePlus IGraphicBufferProducer ABI extension (OOS libgui) ---
+-    // Six OEM-added vtable slots present in OnePlus/Oplus OOS libgui, inserted
++    // Eight OEM-added vtable slots present in OnePlus/Oplus OOS libgui, inserted
+     // here between getConsumerUsage() and setAutoPrerotation() to preserve the
+     // exact IGraphicBufferProducer vtable layout that OEM prebuilts rely on via
+     // hardcoded vtable offsets. Declared in OOS Bp/Bn vtable order (which maps to
+-    // OOS Binder transaction codes 39, 40, 42, 41, 43, 44 respectively).
++    // OOS Binder transaction codes 39, 40, 42, 41, 43, 44, 45, 46 respectively).
+     // Signatures were reverse-engineered from the OOS Bp proxy Parcel I/O
+     // (writeBool/writeInt32 args, readInt32 replies); exact semantics are
+     // unconfirmed, so these are safe no-op stubs whose sole purpose is
+@@ -760,6 +760,8 @@ public:
+     virtual int32_t  oplusGbpGetExtension2();              // OOS txn 41
+     virtual int32_t  oplusGbpGetExtension3();              // OOS txn 43
+     virtual status_t oplusGbpSetExtension3(int32_t value); // OOS txn 44
++    virtual bool     oplusGbpGetExtension4();              // OOS txn 45
++    virtual int32_t  oplusGbpSetExtension4(int32_t value); // OOS txn 46
+ 
+     // Enable/disable the auto prerotation at buffer allocation when the buffer
+     // size is driven by the consumer.

@@ -1,0 +1,120 @@
+From d51c2189da126b6f886b684a3a8face37c2aa778 Mon Sep 17 00:00:00 2001
+From: Jonas Salo <salomannen1234@gmail.com>
+Date: Fri, 7 Aug 2026 21:20:02 +0200
+Subject: [PATCH] sdk: Integrate bypass charging with charging control
+
+
+diff --git a/lineage/lib/main/java/org/lineageos/platform/internal/health/ChargingControlNotification.java b/lineage/lib/main/java/org/lineageos/platform/internal/health/ChargingControlNotification.java
+index 4c544506de5931ef321053db0892197948900248..4343c830c4baca6d9c123063069f31409ebe6265 100644
+--- a/lineage/lib/main/java/org/lineageos/platform/internal/health/ChargingControlNotification.java
++++ b/lineage/lib/main/java/org/lineageos/platform/internal/health/ChargingControlNotification.java
+@@ -15,6 +15,7 @@ import android.content.BroadcastReceiver;
+ import android.content.Context;
+ import android.content.Intent;
+ import android.content.IntentFilter;
++import android.provider.Settings;
+ 
+ import org.lineageos.platform.internal.R;
+ 
+@@ -29,6 +30,7 @@ public class ChargingControlNotification {
+     private static final String ACTION_CHARGING_CONTROL_CANCEL_ONCE =
+             "lineageos.platform.intent.action.CHARGING_CONTROL_CANCEL_ONCE";
+     private static final String CHARGING_CONTROL_CHANNEL_ID = "LineageHealthChargingControl";
++    private static final String BYPASS_CHARGE_ACTIVE = "bypass_charge_active";
+ 
+     private final ChargingControlController mChargingControlController;
+ 
+@@ -106,6 +108,11 @@ public class ChargingControlNotification {
+     }
+ 
+     private void postChargingControlNotification(Long targetTime, int limit) {
++        if (isBypassChargingActive()) {
++            postBypassChargingNotification(limit);
++            return;
++        }
++
+         String title = mContext.getString(R.string.charging_control_notification_title);
+         String message = null;
+ 
+@@ -155,6 +162,11 @@ public class ChargingControlNotification {
+     private void postChargingDoneNotification(Long targetTime, int limit) {
+         cancelChargingControlNotification();
+ 
++        if (isBypassChargingActive()) {
++            postBypassChargingNotification(limit);
++            return;
++        }
++
+         String title = mContext.getString(R.string.charging_control_notification_title);
+         String message;
+         if (targetTime != null) {
+@@ -193,6 +205,32 @@ public class ChargingControlNotification {
+         mNotificationManager.notify(CHARGING_CONTROL_NOTIFICATION_ID, notification.build());
+     }
+ 
++    private void postBypassChargingNotification(int level) {
++        Intent mainIntent = new Intent(INTENT_PARTS);
++        mainIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
++        PendingIntent mainPendingIntent = PendingIntent.getActivity(mContext, 0, mainIntent,
++                PendingIntent.FLAG_IMMUTABLE);
++
++        Notification notification = new Notification.Builder(mContext,
++                CHARGING_CONTROL_CHANNEL_ID)
++                .setContentTitle(mContext.getString(
++                        R.string.bypass_charging_notification_title))
++                .setContentText(mContext.getString(
++                        R.string.bypass_charging_notification_content, level))
++                .setContentIntent(mainPendingIntent)
++                .setSmallIcon(R.drawable.ic_charging_control)
++                .setOngoing(true)
++                .build();
++
++        createNotificationChannelIfNeeded();
++        mNotificationManager.notify(CHARGING_CONTROL_NOTIFICATION_ID, notification);
++    }
++
++    private boolean isBypassChargingActive() {
++        return Settings.Global.getInt(mContext.getContentResolver(),
++                BYPASS_CHARGE_ACTIVE, 0) == 1;
++    }
++
+     private void createNotificationChannelIfNeeded() {
+         String id = CHARGING_CONTROL_CHANNEL_ID;
+         NotificationChannel channel = mNotificationManager.getNotificationChannel(id);
+diff --git a/lineage/res/res/values/strings.xml b/lineage/res/res/values/strings.xml
+index f1f56e76657db7107f57fba3c96ddd7fbcb3c6f0..181012f5c2473210800a7cf314e522b3b300ecc3 100644
+--- a/lineage/res/res/values/strings.xml
++++ b/lineage/res/res/values/strings.xml
+@@ -130,4 +130,6 @@
+     <string name="charging_control_notification_content_limit_reached">Battery is charged to %1$d%%</string>
+     <string name="charging_control_notification_content_target">Battery will be fully charged at %1$s</string>
+     <string name="charging_control_notification_content_target_reached">Battery is charged</string>
++    <string name="bypass_charging_notification_title">Bypass charging active</string>
++    <string name="bypass_charging_notification_content">Battery charging is paused at %1$d%%</string>
+ </resources>
+diff --git a/lineage/res/res/values/symbols.xml b/lineage/res/res/values/symbols.xml
+index 978c3679980fa702907c8a9db12db2505bf2fef0..302b4c886a7ce1322a921c4165a258ce5d4f3f6c 100644
+--- a/lineage/res/res/values/symbols.xml
++++ b/lineage/res/res/values/symbols.xml
+@@ -202,6 +202,8 @@
+     <java-symbol type="string" name="charging_control_notification_content_limit_reached" />
+     <java-symbol type="string" name="charging_control_notification_content_target" />
+     <java-symbol type="string" name="charging_control_notification_content_target_reached" />
++    <java-symbol type="string" name="bypass_charging_notification_title" />
++    <java-symbol type="string" name="bypass_charging_notification_content" />
+ 
+     <!-- Lockscreen rotation default -->
+     <java-symbol type="bool" name="config_lockScreenRotationEnabledByDefault" />
+diff --git a/sdk/src/java/lineageos/providers/LineageSettings.java b/sdk/src/java/lineageos/providers/LineageSettings.java
+index 5779cb4bd7dd6312db60176114d862036ecf8331..5c42e1fec7f8f1de1565e070f807bab077ee306d 100644
+--- a/sdk/src/java/lineageos/providers/LineageSettings.java
++++ b/sdk/src/java/lineageos/providers/LineageSettings.java
+@@ -1433,7 +1433,7 @@ public final class LineageSettings {
+ 
+         /** @hide */
+         public static final Validator CHARGING_CONTROL_LIMIT_VALIDATOR =
+-                new InclusiveIntegerRangeValidator(70, 100);
++                new InclusiveIntegerRangeValidator(0, 100);
+ 
+         /**
+          * Fast charging mode

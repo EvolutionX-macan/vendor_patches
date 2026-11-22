@@ -1,0 +1,72 @@
+From 00e8bcc8f4b620190d85291c056a64222cb21ffe Mon Sep 17 00:00:00 2001
+From: blazerpaul15 <blazerpaul15@gmail.com>
+Date: Sun, 22 Nov 2026 10:21:40 +0900
+Subject: [PATCH] HardwareBuffer: free the Oplus sp<GraphicBuffer> holder on
+ close()
+
+The HardwareBuffer(long, boolean) objects that
+ImageReader$SurfaceImage.nativeGetOplusHardwareBuffer returns had no
+cleaner, and close() skipped freeing them. Each call leaked the heap
+holder plus a strong GraphicBuffer reference.
+
+The holder has the same layout as GraphicBufferWrapper. Stock OOS
+close() always frees it through
+NativeAllocationRegistry.applyFreeFunction(nGetNativeFinalizer(), ptr),
+which runs destroyWrapper, so do the same when there is no cleaner.
+
+Assisted-by: LLM
+
+diff --git a/core/java/android/hardware/HardwareBuffer.java b/core/java/android/hardware/HardwareBuffer.java
+index 8261e5127a390cb27ffd6885beebad2ea62801c6..254ac5b7679e1dbad596e8d3192ef59417b74c52 100644
+--- a/core/java/android/hardware/HardwareBuffer.java
++++ b/core/java/android/hardware/HardwareBuffer.java
+@@ -404,11 +404,11 @@ public final class HardwareBuffer implements Parcelable, AutoCloseable {
+ 
+     /**
+      * Private use only. Called from JNI (ImageReader$SurfaceImage#nativeGetOplusHardwareBuffer)
+-     * with a native object that is an {@code sp<GraphicBuffer>} holder rather than an
+-     * {@code AHardwareBuffer}. Mirrors the stock OnePlus framework's {@code (JZ)V} constructor:
+-     * it intentionally skips nEstimateSize()/registerNativeAllocation(), which assume an
+-     * AHardwareBuffer; the native holder's lifetime is managed by the OnePlus camera (APS) side.
+-     * The boolean argument only selects this overload.
++     * with a heap {@code sp<GraphicBuffer>} holder, which has the same layout as the
++     * GraphicBufferWrapper used by every other HardwareBuffer. Mirrors the stock OnePlus
++     * framework's {@code (JZ)V} constructor: no NativeAllocationRegistry cleaner is registered,
++     * and {@link #close()} frees the holder explicitly through the native finalizer, as stock
++     * does. The boolean argument only selects this overload.
+      */
+     private HardwareBuffer(long nativeObject, boolean isGraphicBufferHolder) {
+         mNativeObject = nativeObject;
+@@ -536,13 +536,16 @@ public final class HardwareBuffer implements Parcelable, AutoCloseable {
+     public void close() {
+         if (!isClosed()) {
+             mCloseGuard.close();
++            final long nativeObject = mNativeObject;
+             mNativeObject = 0;
+-            // mCleaner is null for buffers created via the HardwareBuffer(long, boolean)
+-            // ctor (OnePlus sp<GraphicBuffer> holder); their native lifetime is owned by
+-            // the caller, so there is nothing to free here.
+             if (mCleaner != null) {
+                 mCleaner.run();
+                 mCleaner = null;
++            } else if (nativeObject != 0) {
++                // HardwareBuffer(long, boolean) (OnePlus sp<GraphicBuffer> holder) has no
++                // cleaner. Stock OOS frees it here through the native finalizer
++                // (destroyWrapper), so do the same instead of leaking the GraphicBuffer ref.
++                NativeAllocationRegistry.applyFreeFunction(nGetNativeFinalizer(), nativeObject);
+             }
+         }
+     }
+diff --git a/core/jni/android_media_ImageReader.cpp b/core/jni/android_media_ImageReader.cpp
+index 7f7fbbb02d2c59ca8c66ee6190636002c2c7e911..c574523a4e67e7a5c4f99321a196dc22f094c56d 100644
+--- a/core/jni/android_media_ImageReader.cpp
++++ b/core/jni/android_media_ImageReader.cpp
+@@ -1074,7 +1074,7 @@ static jobject Image_getOplusHardwareBuffer(JNIEnv* env, jobject thiz) {
+         sHbClass = (jclass) env->NewGlobalRef(c);
+         sHbHolderCtor = env->GetMethodID(sHbClass, "<init>", "(JZ)V");
+     }
+-    // Strong-ref'd holder; lifetime owned by the OnePlus APS side (matches stock behavior).
++    // Strong-ref'd holder (GraphicBufferWrapper layout); HardwareBuffer.close() frees it.
+     sp<GraphicBuffer>* holder = new sp<GraphicBuffer>(buffer->mGraphicBuffer);
+     return env->NewObject(sHbClass, sHbHolderCtor,
+             reinterpret_cast<jlong>(holder), JNI_TRUE);

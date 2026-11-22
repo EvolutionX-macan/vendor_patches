@@ -1,0 +1,26 @@
+From 476169e8d20c418e6ccc947da5dfd6f47453b33a Mon Sep 17 00:00:00 2001
+From: blazerpaul15 <blazerpaul15@gmail.com>
+Date: Sun, 22 Nov 2026 16:50:45 +0900
+Subject: [PATCH] config: Expose device bypass charging capability to SystemUI
+
+Devices set BYPASS_CHARGE_SUPPORTED := true before inheriting this
+config to enable persist.sys.battery_bypass_supported.
+
+Assisted-by: LLM
+
+diff --git a/config/common.mk b/config/common.mk
+index 3c714fb6b64abd019d5985feda1452cd8fceddda..d58a1fc149e4d73e68db3c5eb0aaa457c619f8dd 100644
+--- a/config/common.mk
++++ b/config/common.mk
+@@ -82,6 +82,11 @@ endif
+ PRODUCT_PRODUCT_PROPERTIES += persist.sys.strictmode.disable=true
+ endif
+ 
++# Expose the device-specific bypass charging capability to SystemUI.
++BYPASS_CHARGE_SUPPORTED ?= false
++PRODUCT_PRODUCT_PROPERTIES += \
++    persist.sys.battery_bypass_supported=$(BYPASS_CHARGE_SUPPORTED)
++
+ # Backup Tool
+ PRODUCT_COPY_FILES += \
+     vendor/lineage/prebuilt/common/bin/backuptool.sh:install/bin/backuptool.sh \

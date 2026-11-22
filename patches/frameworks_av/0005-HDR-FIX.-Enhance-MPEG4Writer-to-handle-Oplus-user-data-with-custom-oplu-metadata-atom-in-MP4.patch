@@ -1,0 +1,47 @@
+From 338f337f93c04f56b15bcaf49f46d11c3a27bae0 Mon Sep 17 00:00:00 2001
+From: Kill3rEz <98993017+Kill3rEz@users.noreply.github.com>
+Date: Wed, 17 Jun 2026 16:18:50 +0200
+Subject: [PATCH] HDR FIX. Enhance MPEG4Writer to handle Oplus user data with
+ custom 'oplu' metadata atom in MP4.
+
+Ensures the 'udta' box is generated even without GPS data and writes a custom 'oplu' atom to safely store proprietary Oplus camera parameters (e.g., HDR and lens info) directly into the video container.
+
+diff --git a/media/libstagefright/MPEG4Writer.cpp b/media/libstagefright/MPEG4Writer.cpp
+index a8ac7eafcb7feb662eb96cc3077ad47077ea97ac..f67e7a64b40e8c31d0611e95a0d838da3e90d535 100644
+--- a/media/libstagefright/MPEG4Writer.cpp
++++ b/media/libstagefright/MPEG4Writer.cpp
+@@ -1552,7 +1552,12 @@ void MPEG4Writer::writeMvhdBox(int64_t durationUs) {
+ void MPEG4Writer::writeMoovBox(int64_t durationUs) {
+     beginBox("moov");
+     writeMvhdBox(durationUs);
+-    if (mAreGeoTagsAvailable) {
++
++    // [PATCH OPLUSHDR] Assure that "udta" can be written even without GPS if the Oplus data is present
++    const char *oplusData = nullptr;
++    bool hasOplusData = (mStartMeta != nullptr && mStartMeta->findCString(kKeyOplusUserData, &oplusData) && oplusData != nullptr);
++
++    if (mAreGeoTagsAvailable || hasOplusData) {
+         writeUdtaBox();
+     }
+     writeMoovLevelMetaBox();
+@@ -5529,7 +5534,19 @@ void MPEG4Writer::Track::writeCo64Box() {
+ 
+ void MPEG4Writer::writeUdtaBox() {
+     beginBox("udta");
+-    writeGeoDataBox();
++
++    if (mAreGeoTagsAvailable) {
++        writeGeoDataBox();
++    }
++
++    // [PATCH OPLUSHDR] Custom Atom Creation for Gallery/Lenses/HDR
++    const char *oplusData = nullptr;
++    if (mStartMeta != nullptr && mStartMeta->findCString(kKeyOplusUserData, &oplusData) && oplusData != nullptr) {
++        beginBox("oplu");
++        writeCString(oplusData);
++        endBox();
++    }
++
+     endBox();
+ }
+ 

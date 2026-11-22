@@ -1,0 +1,207 @@
+From 64e50ddae2514a9ad869b2cfeeeba67561eb2225 Mon Sep 17 00:00:00 2001
+From: 1vivy <1vivy@tutanota.com>
+Date: Wed, 15 Jul 2026 17:42:12 +0000
+Subject: [PATCH] libgui: add Oplus IGraphicBufferProducer OEM vmethods for
+ vtable-ABI parity
+
+OnePlus/Oplus OOS libgui adds 7 virtual methods to IGraphicBufferProducer,
+growing its vtable from AOSP's 0x1d0 (56 vmethods) to 0x208 (63 vmethods);
+BpGraphicBufferProducer and BnGraphicBufferProducer grow by the same 0x38
+(7 slots) each. Our AOSP-derived libgui only has the stock 56-slot layout.
+
+The OEM prebuilt libNativeWinBuffExchange.so calls IGraphicBufferProducer
+methods through hardcoded vtable byte-offsets that are correct for the OnePlus
+layout but land on the WRONG methods in our AOSP layout (e.g. an offset that is
+an Oplus extension on OOS resolves to allocateBuffers/allowAllocation here),
+silently corrupting or no-oping the BufferQueue exchange used by the HEIF
+window-buffer path and potentially other camera paths.
+
+Recover the 7 OEM slots by reverse-engineering the OOS libgui
+(CPH2745 OOS16.0.8 11.A.42) Bp/Bn vtables and Binder transaction codes, and
+declare them in the exact same vtable positions so the layout matches and the
+OEM offsets resolve to the correct slots:
+
+  vfn[24] getConsumerControlledByApp()   (OOS txn 38) - between getConsumerName()
+          and setSharedBufferMode(); name recovered from the OOS Bp proxy log
+          string "getConsumerControlledByApp failed to transact".
+  vfn[34..39] six Oplus GBP extension slots (OOS txn 39,40,42,41,43,44) - between
+          getConsumerUsage() and setAutoPrerotation(). Signatures were recovered
+          from the OOS Bp Parcel I/O (writeBool/writeInt32 args, readInt32
+          replies); exact semantics are unconfirmed, so they are safe no-op stubs.
+
+Our build already matches OOS on the surrounding flags (WB_UNLIMITED_SLOTS on =
+extendSlotCount present at vfn[2]; BQ_EXTENDEDALLOCATE off = no
+setAdditionalOptions), so these 7 methods are the only remaining delta.
+Verified: rebuilt libgui.so now reports vtable sizes IGBP=0x208(520), Bp=584,
+Bn=696 - byte-identical to OOS - and the 7 stubs land at vfn[24] and vfn[34..39],
+matching the OOS slots exactly.
+
+The stubs provide ABI-layout parity only, not functional behaviour; they no-op
+for every IGBP other than BufferQueue.
+
+Note: this is a real latent ABI bug worth fixing, but it may NOT resolve the
+HEIC "Loading Photo" finalize symptom - on-device tracing showed the HEIF
+finalize's null-input root is UPSTREAM of this exchange (the aps_heif path does
+not call libNativeWinBuffExchange).
+
+[EvoX: Android 17 adds getConfigForSurface() ahead of requestBuffer() and
+ setProducerThrottlingEnabled(), isProducerThrottlingEnabled() and
+ setPresentMode() after setFrameRate(), which would shift every OOS16 slot.
+ Declare those four after exportToParcel() so the vtable prefix, including
+ the Oplus slots at vfn[24] and vfn[34..39], matches OOS16 again.]
+
+Change-Id: I0a2dc5474b300c1f0a8c79b054ee58481a7f2a35
+
+diff --git a/libs/gui/IGraphicBufferProducer.cpp b/libs/gui/IGraphicBufferProducer.cpp
+index 77415c6ac50e5ddfee3c1ebdcf66f62388be45d7..73d7102f4a15e7407d4b5a96df32e969187b2673 100644
+--- a/libs/gui/IGraphicBufferProducer.cpp
++++ b/libs/gui/IGraphicBufferProducer.cpp
+@@ -1100,6 +1100,49 @@ status_t IGraphicBufferProducer::isProducerThrottlingEnabled(bool* /*outEnabled*
+     return INVALID_OPERATION;
+ }
+ 
++// --- Oplus/OnePlus IGraphicBufferProducer ABI-parity extension stubs ---
++// These occupy the OEM-added vtable slots present in OnePlus/Oplus OOS libgui
++// so that OEM prebuilts (e.g. libNativeWinBuffExchange) resolve their hardcoded
++// IGraphicBufferProducer vtable offsets to the correct slots. They are no-ops
++// for every IGBP other than BufferQueue; exact OEM behaviour is not reproduced.
++bool IGraphicBufferProducer::getConsumerControlledByApp() const {
++    // OOS libgui transaction code 38.
++    return false;
++}
++
++status_t IGraphicBufferProducer::oplusGbpSetExtension1(bool enable) {
++    // OOS libgui transaction code 39.
++    (void)enable;
++    return INVALID_OPERATION;
++}
++
++int32_t IGraphicBufferProducer::oplusGbpGetExtension1() {
++    // OOS libgui transaction code 40.
++    return 0;
++}
++
++status_t IGraphicBufferProducer::oplusGbpSetExtension2(int32_t value) {
++    // OOS libgui transaction code 42.
++    (void)value;
++    return INVALID_OPERATION;
++}
++
++int32_t IGraphicBufferProducer::oplusGbpGetExtension2() {
++    // OOS libgui transaction code 41.
++    return 0;
++}
++
++int32_t IGraphicBufferProducer::oplusGbpGetExtension3() {
++    // OOS libgui transaction code 43.
++    return 0;
++}
++
++status_t IGraphicBufferProducer::oplusGbpSetExtension3(int32_t value) {
++    // OOS libgui transaction code 44.
++    (void)value;
++    return INVALID_OPERATION;
++}
++
+ #if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(BQ_EXTENDEDALLOCATE)
+ status_t IGraphicBufferProducer::setAdditionalOptions(const std::vector<gui::AdditionalOptions>&) {
+     // No-op for IGBP other than BufferQueue.
+diff --git a/libs/gui/include/gui/IGraphicBufferProducer.h b/libs/gui/include/gui/IGraphicBufferProducer.h
+index f3ba836866fec10814a2ad83f405732ec9c2a509..447688ede9e5a50430bd725f7e934636e8e3e0d7 100644
+--- a/libs/gui/include/gui/IGraphicBufferProducer.h
++++ b/libs/gui/include/gui/IGraphicBufferProducer.h
+@@ -128,8 +128,6 @@ public:
+         virtual status_t readFromParcel(const android::Parcel* parcel) override;
+     };
+ 
+-    virtual status_t getConfigForSurface(SurfaceConfig* outConfig);
+-
+     // requestBuffer requests a new buffer for the given index. The server (i.e.
+     // the IGraphicBufferProducer implementation) assigns the newly created
+     // buffer to the given slot index, and the client is expected to mirror the
+@@ -655,6 +653,16 @@ public:
+     // Returns the name of the connected consumer.
+     virtual String8 getConsumerName() const = 0;
+ 
++    // --- Oplus/OnePlus IGraphicBufferProducer ABI extension (OOS libgui) ---
++    // Returns whether the connected consumer is controlled by an app. This is
++    // an OEM-added vtable slot present in OnePlus/Oplus OOS libgui (transaction
++    // code 38), inserted here between getConsumerName() and setSharedBufferMode()
++    // to preserve the exact IGraphicBufferProducer vtable layout that OEM
++    // prebuilts (e.g. libNativeWinBuffExchange) rely on via hardcoded vtable
++    // offsets. Recovered from the OOS Bp proxy log string
++    // "getConsumerControlledByApp failed to transact". Default no-op.
++    virtual bool getConsumerControlledByApp() const;
++
+     // Used to enable/disable shared buffer mode.
+     //
+     // When shared buffer mode is enabled the first buffer that is queued or
+@@ -736,6 +744,23 @@ public:
+     // NATIVE_WINDOW_CONSUMER_USAGE_BITS attribute.
+     virtual status_t getConsumerUsage(uint64_t* outUsage) const = 0;
+ 
++    // --- Oplus/OnePlus IGraphicBufferProducer ABI extension (OOS libgui) ---
++    // Six OEM-added vtable slots present in OnePlus/Oplus OOS libgui, inserted
++    // here between getConsumerUsage() and setAutoPrerotation() to preserve the
++    // exact IGraphicBufferProducer vtable layout that OEM prebuilts rely on via
++    // hardcoded vtable offsets. Declared in OOS Bp/Bn vtable order (which maps to
++    // OOS Binder transaction codes 39, 40, 42, 41, 43, 44 respectively).
++    // Signatures were reverse-engineered from the OOS Bp proxy Parcel I/O
++    // (writeBool/writeInt32 args, readInt32 replies); exact semantics are
++    // unconfirmed, so these are safe no-op stubs whose sole purpose is
++    // vtable-slot (ABI) parity, not functional behaviour.
++    virtual status_t oplusGbpSetExtension1(bool enable);   // OOS txn 39
++    virtual int32_t  oplusGbpGetExtension1();              // OOS txn 40
++    virtual status_t oplusGbpSetExtension2(int32_t value); // OOS txn 42
++    virtual int32_t  oplusGbpGetExtension2();              // OOS txn 41
++    virtual int32_t  oplusGbpGetExtension3();              // OOS txn 43
++    virtual status_t oplusGbpSetExtension3(int32_t value); // OOS txn 44
++
+     // Enable/disable the auto prerotation at buffer allocation when the buffer
+     // size is driven by the consumer.
+     //
+@@ -748,18 +773,10 @@ public:
+     virtual status_t setFrameRate(float frameRate, int8_t compatibility,
+                                   int8_t changeFrameRateStrategy);
+ 
+-    // Control CPU throttling for Vulkan/EGL producers
+-    virtual status_t setProducerThrottlingEnabled(bool enabled);
+-    // Returns whether CPU throttling is enabled for Vulkan/EGL producers
+-    virtual status_t isProducerThrottlingEnabled(bool* outEnabled) const;
+-
+ #if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(BQ_EXTENDEDALLOCATE)
+     virtual status_t setAdditionalOptions(const std::vector<gui::AdditionalOptions>& options);
+ #endif
+ 
+-    // setPresentMode sets the buffer acquisition mode.
+-    virtual status_t setPresentMode(int32_t mode);
+-
+     struct RequestBufferOutput : public Flattenable<RequestBufferOutput> {
+         RequestBufferOutput() = default;
+ 
+@@ -919,6 +936,25 @@ protected:
+     // ProducerQueueParcelable object.
+     virtual status_t exportToParcel(Parcel* parcel);
+ #endif
++
++public:
++    // --- Virtual methods added after Android 16 ---
++    // These are declared last so that the vtable prefix above stays byte-identical
++    // to the OnePlus/Oplus OOS16 libgui layout (including the Oplus OEM slots).
++    // OEM prebuilts such as libNativeWinBuffExchange call IGraphicBufferProducer
++    // methods through hardcoded vtable offsets for that layout; declaring these
++    // in their upstream positions would shift every later slot.
++
++    // Returns the consumer-side configuration needed to set up a Surface.
++    virtual status_t getConfigForSurface(SurfaceConfig* outConfig);
++
++    // Control CPU throttling for Vulkan/EGL producers
++    virtual status_t setProducerThrottlingEnabled(bool enabled);
++    // Returns whether CPU throttling is enabled for Vulkan/EGL producers
++    virtual status_t isProducerThrottlingEnabled(bool* outEnabled) const;
++
++    // setPresentMode sets the buffer acquisition mode.
++    virtual status_t setPresentMode(int32_t mode);
+ };
+ 
+ // ----------------------------------------------------------------------------

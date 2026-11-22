@@ -1,0 +1,73 @@
+From 1098deb1cd6dbfedf450176de7aea443e9d46894 Mon Sep 17 00:00:00 2001
+From: blazerpaul15 <blazerpaul15@gmail.com>
+Date: Thu, 19 Nov 2026 23:23:39 +0900
+Subject: [PATCH] CompositionEngine: Treat full-range sRGB YUV as limited range
+ for HWC
+
+Some apps (e.g. Facebook's software video path) queue YV12 frames
+tagged V0_SRGB (BT.709 / sRGB / full range) although the samples are
+limited-range video (Y 16-235). HWC honors the full-range tag and shows
+washed-out video, while the GPU driver converts the same buffers as
+limited range, so the video visibly shifts whenever it moves between
+device and client composition (volume panel, notification shade).
+
+Report YUV buffers with exactly V0_SRGB to HWC as limited range. This
+matches the client composition path and the actual content. It can be
+disabled with debug.sf.treat_full_range_srgb_yuv_as_limited=false.
+
+Assisted-by: LLM
+Change-Id: I096fbbd3636bb6297fca630a5a5519298a43a7bf
+
+diff --git a/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp b/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
+index 4c749656d92cfc68c38c459a42a20291cfe631a1..7c771f867e72acf0b94116cc93e94a2be98cf7d9 100644
+--- a/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
+@@ -16,6 +16,7 @@
+ 
+ #include <DisplayHardware/Hal.h>
+ #include <aidl/android/hardware/graphics/composer3/LutProperties.h>
++#include <android-base/properties.h>
+ #include <android-base/stringprintf.h>
+ #include <common/trace.h>
+ #include <compositionengine/DisplayColorProfile.h>
+@@ -74,6 +75,20 @@ FloatRect reduce(const FloatRect& win, const Region& exclude) {
+     return Region(Rect{win}).subtract(exclude).getBounds().toFloatRect();
+ }
+ 
++bool isYuvVideoFormat(ui::PixelFormat format) {
++    switch (format) {
++        case ui::PixelFormat::YV12:
++        case ui::PixelFormat::YCBCR_420_888:
++        case ui::PixelFormat::YCRCB_420_SP:
++        case ui::PixelFormat::YCBCR_422_SP:
++        case ui::PixelFormat::YCBCR_422_I:
++        case ui::PixelFormat::YCBCR_P010:
++            return true;
++        default:
++            return false;
++    }
++}
++
+ std::shared_ptr<gui::DisplayLuts> createLutsFromAgtm(
+         const OutputCompositionState& outputState, const sp<GraphicBuffer>& buffer,
+         const std::vector<std::optional<LutProperties>>& properties, ui::Dataspace dataspace) {
+@@ -598,6 +613,19 @@ void OutputLayer::updateCompositionState(
+                 (state.dataspace & HAL_DATASPACE_RANGE_MASK) | HAL_DATASPACE_TRANSFER_SRGB);
+     }
+ 
++    // Some apps hand software-decoded video frames to SurfaceFlinger tagged as full-range sRGB
++    // (BT.709 / sRGB / full) although the samples are limited-range video. The display hardware
++    // honors that range and shows washed-out video, while the GPU driver converts the same YUV
++    // buffers as limited range. Report such buffers to HWC as limited range, so the content looks
++    // correct and does not shift when the layer moves between device and client composition.
++    static const bool kTreatFullRangeSrgbYuvAsLimited =
++            base::GetBoolProperty("debug.sf.treat_full_range_srgb_yuv_as_limited", true);
++    if (kTreatFullRangeSrgbYuvAsLimited && pixelFormat && isYuvVideoFormat(*pixelFormat) &&
++        state.dataspace == ui::Dataspace::V0_SRGB) {
++        state.dataspace = static_cast<ui::Dataspace>(
++                (state.dataspace & ~HAL_DATASPACE_RANGE_MASK) | HAL_DATASPACE_RANGE_LIMITED);
++    }
++
+     // re-get HdrRenderType after the dataspace gets changed.
+     hdrRenderType = getHdrRenderType(state.dataspace, pixelFormat, layerFEState->desiredHdrSdrRatio,
+                                      hasHdrMetadata);

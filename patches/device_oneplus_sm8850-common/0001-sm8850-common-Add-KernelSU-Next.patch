@@ -1,0 +1,22 @@
+From 79d4891ec38544976e1477a01b3ca2741fc2391d Mon Sep 17 00:00:00 2001
+From: blazerpaul15 <blazerpaul15@gmail.com>
+Date: Mon, 23 Nov 2026 18:41:00 +0900
+Subject: [PATCH] sm8850-common: Add KernelSU Next
+
+
+diff --git a/BoardConfigCommon.mk b/BoardConfigCommon.mk
+index 961aa5a67f4da30573b3b1887d6225a52e4d3528..a893a18f8ac6799ec1c1c4bb4fe034c0168b46f3 100644
+--- a/BoardConfigCommon.mk
++++ b/BoardConfigCommon.mk
+@@ -96,6 +96,11 @@ BOARD_VENDOR_RAMDISK_KERNEL_MODULES_BLOCKLIST_FILE := $(BOARD_VENDOR_KERNEL_MODU
+ BOARD_VENDOR_RAMDISK_RECOVERY_KERNEL_MODULES_LOAD := $(strip $(shell cat $(COMMON_PATH)/modules.load.recovery))
+ BOOT_KERNEL_MODULES += $(BOARD_VENDOR_RAMDISK_RECOVERY_KERNEL_MODULES_LOAD)
+ 
++# KernelSU (off by default), build with `export WITH_KSU=true` to include it
++ifeq ($(WITH_KSU),true)
++TARGET_KERNEL_BAZEL_FLAGS += --//build/kernel/kleaf:defconfig_fragment=//common:drivers/kernelsu/ksu_defconfig
++endif
++
+ # Metadata
+ BOARD_USES_METADATA_PARTITION := true
+ 

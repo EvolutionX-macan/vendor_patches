@@ -1,0 +1,19 @@
+From a55a4baba4c0ff0a33834d6ed47c381ff493a75e Mon Sep 17 00:00:00 2001
+From: Jonas Salo <salomannen1234@gmail.com>
+Date: Wed, 24 Jun 2026 15:46:41 +0200
+Subject: [PATCH] bootjars: allow Oppo framework packages
+
+[EvoX: com.color.inner is already allowed here; add com.oppo only]
+
+diff --git a/scripts/check_boot_jars/package_allowed_list.txt b/scripts/check_boot_jars/package_allowed_list.txt
+index 37b4a38b8900799e82df05846f92e38b4d1e9c32..b3862925e695add138e59a93ba46b6c53edd4131 100644
+--- a/scripts/check_boot_jars/package_allowed_list.txt
++++ b/scripts/check_boot_jars/package_allowed_list.txt
+@@ -235,6 +235,7 @@ net\.oneplus\..*
+ oplus\..*
+ vendor\.oplus\..*
+ com\.color\.inner\..*
++com\.oppo\..*
+ com\.oneplus\..*
+ com\.thundersoft\..*
+ vendor.oneplus.*

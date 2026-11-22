@@ -1,0 +1,20 @@
+From 00a1c3a3d28055f80c3cd06d2884aa7f0188f7a1 Mon Sep 17 00:00:00 2001
+From: Kill3rEz <98993017+Kill3rEz@users.noreply.github.com>
+Date: Wed, 17 Jun 2026 15:58:19 +0200
+Subject: [PATCH] Add Oplus user data member to StagefrightRecorder
+
+Add mOplusUserData field for OPLUSHDR support.
+OnePlus/OPPO patch adding a private member to store HDR-related video recording data.
+
+diff --git a/media/libmediaplayerservice/StagefrightRecorder.h b/media/libmediaplayerservice/StagefrightRecorder.h
+index 3832fe77a388b92b232f87357f1553fa89c187ee..cc32e175dedd89313eb8ccdf85bab3fce5331287 100644
+--- a/media/libmediaplayerservice/StagefrightRecorder.h
++++ b/media/libmediaplayerservice/StagefrightRecorder.h
+@@ -114,6 +114,7 @@ private:
+     void updateMetrics();
+ 
+     AString mLogSessionId;
++    AString mOplusUserData;  // [PATCH OPLUSHDR]
+     audio_source_t mAudioSource;
+     privacy_sensitive_t mPrivacySensitive;
+     video_source mVideoSource;

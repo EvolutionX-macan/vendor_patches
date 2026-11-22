@@ -1,0 +1,19 @@
+From 4dd494e33b0cadd73570f87c583acb44b893b8bd Mon Sep 17 00:00:00 2001
+From: Kill3rEz <98993017+Kill3rEz@users.noreply.github.com>
+Date: Wed, 17 Jun 2026 16:13:21 +0200
+Subject: [PATCH] Add kKeyOplusUserData to MetaDataBase.h
+
+Defines 'opud' key to allow StagefrightRecorder to safely passthrough proprietary Oplus camera parameters (HDR, lens data) to the MP4 muxer without causing Bad Value crashes.
+
+diff --git a/media/libstagefright/include/media/stagefright/MetaDataBase.h b/media/libstagefright/include/media/stagefright/MetaDataBase.h
+index ea24276c58f8b04791703a4527e2a7883da11d45..e37ebd7818277399321c6cde0c8a2e6739a6cab8 100644
+--- a/media/libstagefright/include/media/stagefright/MetaDataBase.h
++++ b/media/libstagefright/include/media/stagefright/MetaDataBase.h
+@@ -69,6 +69,7 @@ enum {
+     kKeyThumbnailAV1C     = 'tav1',  // raw data
+     kKeyD263              = 'd263',  // raw data
+     kKeyOpusHeader        = 'ohdr',  // raw data
++    kKeyOplusUserData     = 'opud',  // cstring [PATCH OPLUSHDR]
+     kKeyOpusCodecDelay    = 'ocod',  // uint64_t (codec delay in ns)
+     kKeyOpusSeekPreRoll   = 'ospr',  // uint64_t (seek preroll in ns)
+     kKeyVp9CodecPrivate   = 'vp9p',  // raw data (vp9 csd information)
